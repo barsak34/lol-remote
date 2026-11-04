@@ -5,17 +5,45 @@ import { getSupabase } from '@/lib/supabase';
 import { RealtimeChannel } from '@supabase/supabase-js';
 
 interface Champion {
-  id: string;      // "Aatrox"
-  key: number;     // 266
-  name: string;    // "Aatrox"
-  title: string;   // "the Darkin Blade"
-  iconUrl: string; // URL to avatar image
+  id: string;
+  key: number;
+  name: string;
+  title: string;
+  iconUrl: string;
 }
 
-// Fallback champion list if Data Dragon is offline
+interface SummonerInfo {
+  displayName?: string;
+  gameName?: string;
+  tagLine?: string;
+  summonerLevel?: number;
+}
+
+interface ReadyCheckInfo {
+  state?: string;
+  playerResponse?: string; // "None" | "Accepted" | "Declined"
+  timer?: number;
+}
+
+interface ChampSelectInfo {
+  localPlayerCellId?: number;
+  isMyTurn?: boolean;
+  hasSession?: boolean;
+}
+
+interface GameState {
+  online: boolean;
+  lolRunning: boolean;
+  summoner?: SummonerInfo | null;
+  phase: string;
+  readyCheck?: ReadyCheckInfo | null;
+  champSelect?: ChampSelectInfo | null;
+  timestamp: number;
+}
+
 const FALLBACK_CHAMPIONS: Champion[] = [
-  { id: 'Ahri', key: 103, name: 'Ahri', title: 'the Nine-Tailed Fox', iconUrl: 'https://ddragon.leagueoflegends.com/cdn/14.23.1/img/champion/Ahri.png' },
   { id: 'Aatrox', key: 266, name: 'Aatrox', title: 'the Darkin Blade', iconUrl: 'https://ddragon.leagueoflegends.com/cdn/14.23.1/img/champion/Aatrox.png' },
+  { id: 'Ahri', key: 103, name: 'Ahri', title: 'the Nine-Tailed Fox', iconUrl: 'https://ddragon.leagueoflegends.com/cdn/14.23.1/img/champion/Ahri.png' },
   { id: 'Jinx', key: 222, name: 'Jinx', title: 'the Loose Cannon', iconUrl: 'https://ddragon.leagueoflegends.com/cdn/14.23.1/img/champion/Jinx.png' },
   { id: 'LeeSin', key: 64, name: 'Lee Sin', title: 'the Blind Monk', iconUrl: 'https://ddragon.leagueoflegends.com/cdn/14.23.1/img/champion/LeeSin.png' },
   { id: 'Lux', key: 99, name: 'Lux', title: 'the Lady of Luminosity', iconUrl: 'https://ddragon.leagueoflegends.com/cdn/14.23.1/img/champion/Lux.png' },
@@ -29,13 +57,22 @@ export default function HomePage() {
   const [champions, setChampions] = useState<Champion[]>(FALLBACK_CHAMPIONS);
   const [selectedChampionId, setSelectedChampionId] = useState<number>(FALLBACK_CHAMPIONS[0].key);
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusMessage, setStatusMessage] = useState<{ text: string; type: 'info' | 'success' | 'error' | 'warning' } | null>(null);
+  const [statusBanner, setStatusBanner] = useState<{ text: string; type: 'info' | 'success' | 'error' | 'warning' } | null>(null);
   const [channelStatus, setChannelStatus] = useState<'DISCONNECTED' | 'CONNECTING' | 'CONNECTED'>('CONNECTING');
+  const [gameState, setGameState] = useState<GameState>({
+    online: false,
+    lolRunning: false,
+    phase: 'None',
+    timestamp: 0,
+  });
   const [isAccepting, setIsAccepting] = useState(false);
   const [isLocking, setIsLocking] = useState(false);
-  const channelRef = useRef<RealtimeChannel | null>(null);
 
-  // 1. Fetch complete champions list from Riot Data Dragon
+  const channelRef = useRef<RealtimeChannel | null>(null);
+  const lastStateTime = useRef<number>(0);
+  const prevPhase = useRef<string>('None');
+
+  // 1. Fetch champions from Riot Data Dragon
   useEffect(() => {
     async function loadChampions() {
       try {
@@ -60,19 +97,19 @@ export default function HomePage() {
           setSelectedChampionId(list[0].key);
         }
       } catch (err) {
-        console.warn('Error fetching Data Dragon champions, using fallback list:', err);
+        console.warn('Error fetching Data Dragon champions, using fallback:', err);
       }
     }
     loadChampions();
   }, []);
 
-  // 2. Connect to Supabase Realtime Broadcast Channel
+  // 2. Connect to Supabase Realtime
   useEffect(() => {
     const supabase = getSupabase();
     if (!supabase) {
       setChannelStatus('DISCONNECTED');
-      setStatusMessage({
-        text: 'Faltan credenciales en .env.local (NEXT_PUBLIC_SUPABASE_URL y ANON_KEY)',
+      setStatusBanner({
+        text: 'Configura las variables de Supabase en .env.local o en Vercel',
         type: 'warning',
       });
       return;
@@ -85,77 +122,109 @@ export default function HomePage() {
       },
     });
 
-    channel
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          setChannelStatus('CONNECTED');
-          setStatusMessage({ text: `Conectado al canal '${channelName}'`, type: 'info' });
-        } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
-          setChannelStatus('DISCONNECTED');
-        } else {
-          setChannelStatus('CONNECTING');
+    // Escuchar el estado sincronizado en vivo desde el PC
+    channel.on('broadcast', { event: 'GAME_STATE' }, (payload: any) => {
+      const state: GameState = payload.payload || payload;
+      lastStateTime.current = Date.now();
+      setGameState(state);
+
+      // Si recién entra en ReadyCheck y antes no lo estaba, vibrar el teléfono
+      if (state.phase === 'ReadyCheck' && prevPhase.current !== 'ReadyCheck') {
+        if (typeof window !== 'undefined' && 'vibrate' in navigator) {
+          try {
+            navigator.vibrate([400, 200, 400]);
+          } catch {}
         }
+      }
+      prevPhase.current = state.phase;
+    });
+
+    // Escuchar respuestas de acciones procesadas por la PC
+    channel.on('broadcast', { event: 'ACTION_RESULT' }, (payload: any) => {
+      const res = payload.payload || payload;
+      setStatusBanner({
+        text: res.message || (res.success ? 'Acción completada con éxito' : 'No se pudo completar la acción'),
+        type: res.success ? 'success' : 'error',
       });
+    });
+
+    channel.subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        setChannelStatus('CONNECTED');
+        // Solicitar el estado actual al agente de inmediato
+        channel.send({
+          type: 'broadcast',
+          event: 'PING_STATE',
+          payload: { req: Date.now() },
+        });
+      } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
+        setChannelStatus('DISCONNECTED');
+      } else {
+        setChannelStatus('CONNECTING');
+      }
+    });
 
     channelRef.current = channel;
 
+    // Timer para marcar PC como Offline si no emite estado en 4 segundos
+    const watchdog = setInterval(() => {
+      if (Date.now() - lastStateTime.current > 4000) {
+        setGameState((prev) => (prev.online ? { ...prev, online: false } : prev));
+      }
+    }, 2000);
+
     return () => {
+      clearInterval(watchdog);
       supabase.removeChannel(channel);
     };
   }, []);
 
-  // Handler: Enviar evento ACCEPT_MATCH
+  // Enviar orden de Aceptar Partida
   const handleAcceptMatch = async () => {
-    setIsAccepting(true);
-    setStatusMessage({ text: 'Enviando orden: ACEPTAR PARTIDA...', type: 'info' });
-
     if (!channelRef.current || channelStatus !== 'CONNECTED') {
-      setStatusMessage({
-        text: 'No hay conexión con Supabase Realtime. Revisa las variables en .env.local',
-        type: 'error',
-      });
-      setIsAccepting(false);
+      setStatusBanner({ text: 'Sin conexión a Supabase Realtime', type: 'error' });
+      return;
+    }
+    if (!gameState.online) {
+      setStatusBanner({ text: 'El Agente Local en tu PC no está ejecutándose', type: 'error' });
       return;
     }
 
+    setIsAccepting(true);
+    setStatusBanner({ text: 'Enviando orden a la PC...', type: 'info' });
+
     try {
-      const resp = await channelRef.current.send({
+      await channelRef.current.send({
         type: 'broadcast',
         event: 'ACCEPT_MATCH',
         payload: { timestamp: Date.now() },
       });
-
-      if (resp === 'ok') {
-        setStatusMessage({ text: '¡Partida aceptada enviada al PC!', type: 'success' });
-      } else {
-        setStatusMessage({ text: `Estado de envío: ${resp}`, type: 'warning' });
-      }
     } catch (err: any) {
-      setStatusMessage({ text: `Error al enviar: ${err?.message || err}`, type: 'error' });
+      setStatusBanner({ text: `Error: ${err?.message || err}`, type: 'error' });
     } finally {
-      setTimeout(() => setIsAccepting(false), 800);
+      setTimeout(() => setIsAccepting(false), 600);
     }
   };
 
-  // Handler: Enviar evento LOCK_CHAMPION
+  // Enviar orden de Fijar Campeón
   const handleLockChampion = async () => {
     const currentChamp = champions.find((c) => c.key === selectedChampionId);
     if (!currentChamp) return;
 
-    setIsLocking(true);
-    setStatusMessage({ text: `Enviando orden: FIJAR ${currentChamp.name.toUpperCase()} (ID: ${currentChamp.key})...`, type: 'info' });
-
     if (!channelRef.current || channelStatus !== 'CONNECTED') {
-      setStatusMessage({
-        text: 'No hay conexión con Supabase Realtime. Revisa las variables en .env.local',
-        type: 'error',
-      });
-      setIsLocking(false);
+      setStatusBanner({ text: 'Sin conexión a Supabase Realtime', type: 'error' });
+      return;
+    }
+    if (!gameState.online) {
+      setStatusBanner({ text: 'El Agente Local en tu PC no está ejecutándose', type: 'error' });
       return;
     }
 
+    setIsLocking(true);
+    setStatusBanner({ text: `Enviando selección de ${currentChamp.name} a la PC...`, type: 'info' });
+
     try {
-      const resp = await channelRef.current.send({
+      await channelRef.current.send({
         type: 'broadcast',
         event: 'LOCK_CHAMPION',
         payload: {
@@ -164,19 +233,10 @@ export default function HomePage() {
           timestamp: Date.now(),
         },
       });
-
-      if (resp === 'ok') {
-        setStatusMessage({
-          text: `¡Orden de pick enviada! Fijando ${currentChamp.name} y aplicando runas/hechizos recomendados...`,
-          type: 'success',
-        });
-      } else {
-        setStatusMessage({ text: `Estado de envío: ${resp}`, type: 'warning' });
-      }
     } catch (err: any) {
-      setStatusMessage({ text: `Error al enviar pick: ${err?.message || err}`, type: 'error' });
+      setStatusBanner({ text: `Error: ${err?.message || err}`, type: 'error' });
     } finally {
-      setTimeout(() => setIsLocking(false), 1000);
+      setTimeout(() => setIsLocking(false), 800);
     }
   };
 
@@ -185,14 +245,44 @@ export default function HomePage() {
     c.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  const isReadyCheck = gameState.phase === 'ReadyCheck';
+  const hasAccepted = gameState.readyCheck?.playerResponse === 'Accepted';
+  const isChampSelect = gameState.phase === 'ChampSelect';
+  const isMatchmaking = gameState.phase === 'Matchmaking';
+
+  // Texto legible de fase
+  const getPhaseDisplay = () => {
+    if (!gameState.online) return 'PC Desconectada';
+    if (!gameState.lolRunning) return 'LoL Cerrado';
+    switch (gameState.phase) {
+      case 'None':
+        return 'En Menú Principal';
+      case 'Lobby':
+        return 'En Sala / Lobby';
+      case 'Matchmaking':
+        return 'Buscando Partida...';
+      case 'ReadyCheck':
+        return '¡PARTIDA ENCONTRADA!';
+      case 'ChampSelect':
+        return 'En Selección de Campeón';
+      case 'InProgress':
+        return 'En Partida';
+      case 'WaitingForStats':
+      case 'EndOfGame':
+        return 'Fin de Partida';
+      default:
+        return gameState.phase;
+    }
+  };
+
   return (
     <main style={{
       width: '100%',
       maxWidth: '480px',
-      padding: '20px 16px 40px',
+      padding: '18px 16px 40px',
       display: 'flex',
       flexDirection: 'column',
-      gap: '20px',
+      gap: '18px',
     }}>
       {/* Header */}
       <header style={{
@@ -204,7 +294,7 @@ export default function HomePage() {
       }}>
         <div>
           <h1 style={{
-            fontSize: '1.4rem',
+            fontSize: '1.35rem',
             fontWeight: 800,
             letterSpacing: '1px',
             color: 'var(--hextech-gold)',
@@ -212,8 +302,10 @@ export default function HomePage() {
           }}>
             LoL Remote
           </h1>
-          <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-            Control de Selección & Partidas
+          <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+            {gameState.summoner?.displayName
+              ? `${gameState.summoner.displayName}#${gameState.summoner.tagLine || 'LAS'} (Lv ${gameState.summoner.summonerLevel})`
+              : 'Control Móvil Remoto'}
           </p>
         </div>
 
@@ -224,126 +316,194 @@ export default function HomePage() {
           gap: '6px',
           padding: '4px 10px',
           borderRadius: '999px',
-          fontSize: '0.7rem',
-          fontWeight: 600,
+          fontSize: '0.68rem',
+          fontWeight: 700,
           backgroundColor:
-            channelStatus === 'CONNECTED'
+            gameState.online
               ? 'rgba(37, 187, 132, 0.2)'
-              : channelStatus === 'CONNECTING'
-              ? 'rgba(200, 170, 110, 0.2)'
               : 'rgba(232, 64, 87, 0.2)',
           color:
-            channelStatus === 'CONNECTED'
+            gameState.online
               ? 'var(--riot-green)'
-              : channelStatus === 'CONNECTING'
-              ? 'var(--hextech-gold)'
               : 'var(--riot-red)',
-          border: `1px solid ${
-            channelStatus === 'CONNECTED'
-              ? 'var(--riot-green)'
-              : channelStatus === 'CONNECTING'
-              ? 'var(--hextech-gold)'
-              : 'var(--riot-red)'
-          }`,
+          border: `1px solid ${gameState.online ? 'var(--riot-green)' : 'var(--riot-red)'}`,
         }}>
           <span style={{
             width: '7px',
             height: '7px',
             borderRadius: '50%',
-            backgroundColor:
-              channelStatus === 'CONNECTED'
-                ? 'var(--riot-green)'
-                : channelStatus === 'CONNECTING'
-                ? 'var(--hextech-gold)'
-                : 'var(--riot-red)',
+            backgroundColor: gameState.online ? 'var(--riot-green)' : 'var(--riot-red)',
           }} />
-          {channelStatus === 'CONNECTED' ? 'ONLINE' : channelStatus === 'CONNECTING' ? 'CONECTANDO' : 'OFFLINE'}
+          {gameState.online ? 'PC CONECTADA' : 'PC OFFLINE'}
         </div>
       </header>
 
-      {/* Status banner */}
-      {statusMessage && (
+      {/* Banner de Aviso si el PC no está conectado */}
+      {!gameState.online && (
         <div style={{
           padding: '12px 14px',
-          borderRadius: '8px',
-          fontSize: '0.85rem',
-          lineHeight: '1.3',
-          border: '1px solid',
-          borderColor:
-            statusMessage.type === 'success'
-              ? 'var(--riot-green)'
-              : statusMessage.type === 'error'
-              ? 'var(--riot-red)'
-              : statusMessage.type === 'warning'
-              ? 'var(--hextech-gold)'
-              : 'var(--hextech-blue)',
-          backgroundColor:
-            statusMessage.type === 'success'
-              ? 'rgba(37, 187, 132, 0.15)'
-              : statusMessage.type === 'error'
-              ? 'rgba(232, 64, 87, 0.15)'
-              : statusMessage.type === 'warning'
-              ? 'rgba(200, 170, 110, 0.15)'
-              : 'rgba(10, 200, 185, 0.15)',
-          color: 'var(--hextech-gold-bright)',
+          borderRadius: '10px',
+          backgroundColor: 'rgba(232, 64, 87, 0.15)',
+          border: '1px solid var(--riot-red)',
+          fontSize: '0.8rem',
+          color: '#f8d7da',
+          lineHeight: '1.4',
         }}>
-          {statusMessage.text}
+          ⚠️ <strong>Agente Local no detectado en tu PC:</strong> Asegúrate de ejecutar <code>run-agent.bat</code> o <code>node local-agent/agent.mjs</code> en tu computadora con League of Legends abierto.
         </div>
       )}
 
-      {/* SECCIÓN 1: BOTÓN GIGANTE ACEPTAR PARTIDA */}
+      {/* Banner de Notificaciones / Feedback */}
+      {statusBanner && (
+        <div style={{
+          padding: '10px 14px',
+          borderRadius: '8px',
+          fontSize: '0.82rem',
+          lineHeight: '1.3',
+          border: '1px solid',
+          borderColor:
+            statusBanner.type === 'success'
+              ? 'var(--riot-green)'
+              : statusBanner.type === 'error'
+              ? 'var(--riot-red)'
+              : statusBanner.type === 'warning'
+              ? 'var(--hextech-gold)'
+              : 'var(--hextech-blue)',
+          backgroundColor:
+            statusBanner.type === 'success'
+              ? 'rgba(37, 187, 132, 0.18)'
+              : statusBanner.type === 'error'
+              ? 'rgba(232, 64, 87, 0.18)'
+              : statusBanner.type === 'warning'
+              ? 'rgba(200, 170, 110, 0.18)'
+              : 'rgba(10, 200, 185, 0.18)',
+          color: 'var(--hextech-gold-bright)',
+        }}>
+          {statusBanner.text}
+        </div>
+      )}
+
+      {/* SECCIÓN 1: READY CHECK / ESTADO ACTUAL */}
       <section style={{
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
-        padding: '24px 16px',
+        padding: '22px 16px',
         background: 'var(--bg-card)',
         borderRadius: '16px',
-        border: '1px solid var(--border-gold)',
-        boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4)',
+        border: `1px solid ${isReadyCheck ? 'var(--hextech-blue)' : 'var(--border-gold)'}`,
+        boxShadow: isReadyCheck
+          ? '0 0 30px var(--hextech-blue-glow)'
+          : '0 8px 32px rgba(0, 0, 0, 0.4)',
+        transition: 'all 0.3s ease',
       }}>
-        <span style={{
-          fontSize: '0.75rem',
-          letterSpacing: '2px',
-          textTransform: 'uppercase',
-          color: 'var(--hextech-gold)',
-          marginBottom: '16px',
-          fontWeight: 700,
-        }}>
-          Ready Check Instantáneo
-        </span>
+        {/* CASO A: ¡HAY PARTIDA PARA ACEPTAR! (ReadyCheck) */}
+        {isReadyCheck ? (
+          <div style={{ width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+            <span style={{
+              fontSize: '0.8rem',
+              letterSpacing: '2px',
+              textTransform: 'uppercase',
+              color: 'var(--riot-green)',
+              marginBottom: '14px',
+              fontWeight: 800,
+            }}>
+              🚨 ¡PARTIDA ENCONTRADA! 🚨
+            </span>
 
-        <button
-          onClick={handleAcceptMatch}
-          disabled={isAccepting}
-          className="ready-check-pulse"
-          style={{
-            width: '100%',
-            height: '110px',
-            borderRadius: '12px',
-            background: 'linear-gradient(135deg, #1e3a5f 0%, #0ac8b9 50%, #25bb84 100%)',
-            border: '2px solid #f0e6d2',
-            color: '#ffffff',
-            fontSize: '1.35rem',
-            fontWeight: 900,
-            letterSpacing: '2px',
-            textTransform: 'uppercase',
-            textShadow: '0 2px 8px rgba(0, 0, 0, 0.6)',
-            boxShadow: '0 4px 20px var(--hextech-blue-glow)',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '6px',
-            transform: isAccepting ? 'scale(0.97)' : 'scale(1)',
-            transition: 'transform 0.15s ease',
-          }}
-        >
-          <span>{isAccepting ? '¡ACEPTANDO!' : 'ACEPTAR PARTIDA'}</span>
-          <span style={{ fontSize: '0.75rem', fontWeight: 600, opacity: 0.9, letterSpacing: '1px' }}>
-            CLICK PARA ACEPTAR EN PC
-          </span>
-        </button>
+            {hasAccepted ? (
+              <div style={{
+                width: '100%',
+                padding: '24px 16px',
+                borderRadius: '12px',
+                backgroundColor: 'rgba(37, 187, 132, 0.25)',
+                border: '2px solid var(--riot-green)',
+                textAlign: 'center',
+                color: 'var(--riot-green)',
+                fontWeight: 800,
+                fontSize: '1.1rem',
+                letterSpacing: '1px',
+              }}>
+                ✓ ¡PARTIDA YA ACEPTADA!
+                <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', marginTop: '6px' }}>
+                  Esperando que los demás jugadores acepten...
+                </div>
+              </div>
+            ) : (
+              <button
+                onClick={handleAcceptMatch}
+                disabled={isAccepting}
+                className="ready-check-pulse"
+                style={{
+                  width: '100%',
+                  height: '115px',
+                  borderRadius: '12px',
+                  background: 'linear-gradient(135deg, #1e3a5f 0%, #0ac8b9 50%, #25bb84 100%)',
+                  border: '2px solid #ffffff',
+                  color: '#ffffff',
+                  fontSize: '1.4rem',
+                  fontWeight: 900,
+                  letterSpacing: '2px',
+                  textTransform: 'uppercase',
+                  textShadow: '0 2px 8px rgba(0, 0, 0, 0.7)',
+                  boxShadow: '0 4px 24px var(--hextech-blue-glow)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                  transform: isAccepting ? 'scale(0.97)' : 'scale(1)',
+                  transition: 'transform 0.15s ease',
+                }}
+              >
+                <span>{isAccepting ? '¡ACEPTANDO!' : '¡ACEPTAR PARTIDA!'}</span>
+                <span style={{ fontSize: '0.75rem', fontWeight: 700, letterSpacing: '1px', opacity: 0.95 }}>
+                  TOCA AQUÍ PARA ACEPTAR
+                </span>
+              </button>
+            )}
+          </div>
+        ) : (
+          /* CASO B: NO HAY PARTIDA PARA ACEPTAR EN ESTE MOMENTO */
+          <div style={{ width: '100%', textAlign: 'center', padding: '10px 0' }}>
+            <span style={{
+              fontSize: '0.72rem',
+              letterSpacing: '2px',
+              textTransform: 'uppercase',
+              color: 'var(--hextech-gold)',
+              fontWeight: 700,
+            }}>
+              Estado en Vivo del Juego
+            </span>
+
+            <div style={{
+              marginTop: '12px',
+              padding: '16px',
+              borderRadius: '10px',
+              backgroundColor: 'rgba(9, 20, 40, 0.8)',
+              border: '1px solid rgba(200, 170, 110, 0.25)',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: '6px',
+            }}>
+              <div style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--hextech-gold-bright)' }}>
+                {isMatchmaking && '⏳ '}
+                {getPhaseDisplay()}
+              </div>
+
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                {isMatchmaking
+                  ? 'Buscando partida en cola... El botón de aceptar vibrará y aparecerá automáticamente apenas salte la partida.'
+                  : isChampSelect
+                  ? 'Estás en selección de campeón. Puedes fijar tu pick y runas abajo.'
+                  : gameState.online
+                  ? 'Esperando que entres en cola de emparejamiento...'
+                  : 'Inicia el agente en tu PC para sincronizar el estado.'}
+              </div>
+            </div>
+          </div>
+        )}
       </section>
 
       {/* SECCIÓN 2: SELECTOR DE CAMPEÓN */}
@@ -354,8 +514,10 @@ export default function HomePage() {
         padding: '20px 16px',
         background: 'var(--bg-card)',
         borderRadius: '16px',
-        border: '1px solid var(--border-gold)',
-        boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4)',
+        border: `1px solid ${isChampSelect ? 'var(--hextech-gold)' : 'var(--border-gold)'}`,
+        boxShadow: isChampSelect
+          ? '0 0 25px rgba(200, 170, 110, 0.3)'
+          : '0 8px 32px rgba(0, 0, 0, 0.4)',
       }}>
         <div style={{
           display: 'flex',
@@ -371,15 +533,21 @@ export default function HomePage() {
           }}>
             Selección de Campeón
           </span>
-          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-            {champions.length} campeones
-          </span>
+          {isChampSelect && (
+            <span style={{
+              fontSize: '0.7rem',
+              fontWeight: 800,
+              color: gameState.champSelect?.isMyTurn ? 'var(--riot-green)' : 'var(--hextech-gold)',
+            }}>
+              {gameState.champSelect?.isMyTurn ? '● ¡ES TU TURNO DE PICK!' : '● EN SELECCIÓN'}
+            </span>
+          )}
         </div>
 
-        {/* Buscador de campeón */}
+        {/* Buscador */}
         <input
           type="text"
-          placeholder="Buscar por nombre (ej: Yasuo, Ahri)..."
+          placeholder="Buscar campeón (ej: Yasuo, Ahri)..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           style={{
@@ -393,7 +561,7 @@ export default function HomePage() {
           }}
         />
 
-        {/* Selector nativo / dropdown */}
+        {/* Dropdown */}
         <select
           value={selectedChampionId}
           onChange={(e) => setSelectedChampionId(Number(e.target.value))}
@@ -455,25 +623,32 @@ export default function HomePage() {
         {/* Botón Fijar Campeón */}
         <button
           onClick={handleLockChampion}
-          disabled={isLocking || !selectedChamp}
+          disabled={isLocking || !selectedChamp || !gameState.online}
           style={{
             marginTop: '4px',
             width: '100%',
             padding: '16px',
             borderRadius: '10px',
-            background: 'linear-gradient(135deg, #785a28 0%, #c89b3c 50%, #f0e6d2 100%)',
+            background: gameState.online
+              ? 'linear-gradient(135deg, #785a28 0%, #c89b3c 50%, #f0e6d2 100%)'
+              : 'rgba(255, 255, 255, 0.1)',
             border: '1px solid #f0e6d2',
-            color: '#091428',
+            color: gameState.online ? '#091428' : 'var(--text-muted)',
             fontSize: '1.05rem',
             fontWeight: 900,
             letterSpacing: '1.5px',
             textTransform: 'uppercase',
-            boxShadow: '0 4px 16px rgba(200, 170, 110, 0.3)',
+            boxShadow: gameState.online ? '0 4px 16px rgba(200, 170, 110, 0.3)' : 'none',
             transform: isLocking ? 'scale(0.98)' : 'scale(1)',
             transition: 'transform 0.15s ease',
+            cursor: gameState.online ? 'pointer' : 'not-allowed',
           }}
         >
-          {isLocking ? 'Fijando Pick...' : `Fijar a ${selectedChamp ? selectedChamp.name : 'Campeón'}`}
+          {isLocking
+            ? 'Enviando Pick...'
+            : !gameState.online
+            ? 'PC Desconectada'
+            : `Fijar a ${selectedChamp ? selectedChamp.name : 'Campeón'}`}
         </button>
 
         <p style={{
@@ -482,18 +657,18 @@ export default function HomePage() {
           textAlign: 'center',
           lineHeight: '1.4',
         }}>
-          Al fijar el campeón, el Agente Local aplicará automáticamente la primera página recomendada de runas y hechizos de invocador en el cliente de LoL.
+          Aplica el pick y automáticamente configura la primera página de runas y hechizos recomendados.
         </p>
       </section>
 
-      {/* Footer info */}
+      {/* Footer */}
       <footer style={{
         marginTop: 'auto',
         textAlign: 'center',
         fontSize: '0.7rem',
         color: 'var(--text-muted)',
       }}>
-        LoL Remote &bull; LCU API + Supabase Realtime
+        LoL Remote &bull; Sincronización en Tiempo Real
       </footer>
     </main>
   );

@@ -28,7 +28,7 @@ const SUPABASE_URL = env.SUPABASE_URL || process.env.SUPABASE_URL;
 const SUPABASE_KEY = env.SUPABASE_ANON_KEY || env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY;
 const SUPABASE_CHANNEL = env.SUPABASE_CHANNEL || 'lol-commands';
 
-// 2. Localizar y parsear lockfile
+// 2. Localizar y parsear lockfile dinámicamente
 function getLockfile() {
   const candidates = [
     process.env.LOL_LOCKFILE_PATH,
@@ -44,7 +44,7 @@ function getLockfile() {
         const [processName, pid, port, password, protocol] = raw.split(':');
         return { path: p, processName, pid: parseInt(pid, 10), port: parseInt(port, 10), password, protocol };
       } catch (e) {
-        console.error('Error leyendo lockfile:', e);
+        // archivo posiblemente bloqueado temporalmente durante arranque
       }
     }
   }
@@ -54,6 +54,10 @@ function getLockfile() {
 // 3. Cliente LCU
 class LCUClient {
   constructor(lockfile) {
+    this.updateCredentials(lockfile);
+  }
+
+  updateCredentials(lockfile) {
     this.lockfile = lockfile;
     this.baseURL = `https://127.0.0.1:${lockfile.port}`;
     this.authHeader = 'Basic ' + Buffer.from(`riot:${lockfile.password}`).toString('base64');
@@ -72,19 +76,47 @@ class LCUClient {
     if (body) {
       options.body = JSON.stringify(body);
     }
-    const res = await fetch(url, options);
-    let data = null;
-    const text = await res.text();
     try {
-      data = JSON.parse(text);
-    } catch {
-      data = text;
+      const res = await fetch(url, options);
+      let data = null;
+      const text = await res.text();
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = text;
+      }
+      return { status: res.status, ok: res.ok, data };
+    } catch (err) {
+      return { status: 0, ok: false, error: err.message };
     }
-    return { status: res.status, ok: res.ok, data };
   }
 
   async getCurrentSummoner() {
     return this.request('GET', '/lol-summoner/v1/current-summoner');
+  }
+
+  async getGameflowPhase() {
+    const res = await this.request('GET', '/lol-gameflow/v1/gameflow-phase');
+    if (res.ok) {
+      return typeof res.data === 'string' ? res.data : String(res.data);
+    }
+    return 'None';
+  }
+
+  async getReadyCheck() {
+    const res = await this.request('GET', '/lol-matchmaking/v1/ready-check');
+    if (res.ok && typeof res.data === 'object') {
+      return res.data;
+    }
+    return null;
+  }
+
+  async getChampSelectSession() {
+    const res = await this.request('GET', '/lol-champ-select/v1/session');
+    if (res.ok && typeof res.data === 'object') {
+      return res.data;
+    }
+    return null;
   }
 
   async acceptMatch() {
@@ -92,10 +124,14 @@ class LCUClient {
     const res = await this.request('POST', '/lol-matchmaking/v1/ready-check/accept');
     if (res.ok) {
       console.log('>>> [LCU ÉXITO] ¡Partida aceptada en el cliente!');
+      return { success: true, message: '¡Partida aceptada exitosamente en LoL!' };
     } else {
       console.error('[LCU ERROR] No se pudo aceptar la partida:', res.status, res.data);
+      const msg = res.status === 404
+        ? 'No hay ninguna partida activa por aceptar en este momento.'
+        : `Error al aceptar partida (código ${res.status})`;
+      return { success: false, message: msg };
     }
-    return res;
   }
 
   async lockChampion(championId) {
@@ -105,7 +141,7 @@ class LCUClient {
     const sessionRes = await this.request('GET', '/lol-champ-select/v1/session');
     if (!sessionRes.ok) {
       console.error('[LCU ERROR] No estás en selección de campeón o LCU respondió error:', sessionRes.data);
-      return;
+      return { success: false, message: 'No estás en selección de campeón.' };
     }
 
     const session = sessionRes.data;
@@ -128,7 +164,7 @@ class LCUClient {
 
     if (targetActionId === null) {
       console.error('[LCU ERROR] No se encontró una acción de selección activa para tu celda.');
-      return;
+      return { success: false, message: 'No es tu turno de selección o ya fijaste campeón.' };
     }
 
     console.log(`[LCU] Acción encontrada (ID: ${targetActionId}). Asignando campeón ${championId}...`);
@@ -147,6 +183,8 @@ class LCUClient {
     setTimeout(async () => {
       await this.applyRunesAndSpells(championId);
     }, 600);
+
+    return { success: true, message: `¡Campeón (ID: ${championId}) fijado! Aplicando runas recomendadas...` };
   }
 
   async applyRunesAndSpells(championId) {
@@ -196,27 +234,6 @@ async function main() {
   console.log('           LoL Remote - Local Agent Runner          ');
   console.log('====================================================');
 
-  const lockfile = getLockfile();
-  if (!lockfile) {
-    console.error('[ERROR] No se encontró el lockfile de League of Legends.');
-    console.error('Asegúrate de que el juego esté abierto.');
-    process.exit(1);
-  }
-
-  console.log(`[LCU] Lockfile encontrado en: ${lockfile.path}`);
-  console.log(`[LCU] Puerto: ${lockfile.port} | Protocolo: ${lockfile.protocol}`);
-
-  const client = new LCUClient(lockfile);
-  const summonerRes = await client.getCurrentSummoner();
-
-  if (summonerRes.ok) {
-    const s = summonerRes.data;
-    console.log(`>>> [LCU CONECTADO] Invocador: ${s.gameName || s.displayName}#${s.tagLine} (Nivel ${s.summonerLevel})`);
-  } else {
-    console.warn('[LCU AVISO] Conectado a LCU pero el invocador aún no está logueado:', summonerRes.status);
-  }
-
-  // 5. Conectar a Supabase Realtime usando @supabase/supabase-js
   if (!SUPABASE_URL || !SUPABASE_KEY) {
     console.error('[ERROR] Falta SUPABASE_URL o SUPABASE_ANON_KEY en local-agent/.env');
     return;
@@ -234,20 +251,153 @@ async function main() {
     config: { broadcast: { ack: true, self: true } },
   });
 
-  channel.on('broadcast', { event: 'ACCEPT_MATCH' }, async (payload) => {
+  let client = null;
+  let cachedSummoner = null;
+
+  function ensureClient() {
+    const lockfile = getLockfile();
+    if (!lockfile) {
+      client = null;
+      return null;
+    }
+    if (!client || client.lockfile.port !== lockfile.port || client.lockfile.password !== lockfile.password) {
+      client = new LCUClient(lockfile);
+      console.log(`[LCU] Lockfile vinculado en puerto: ${lockfile.port}`);
+    }
+    return client;
+  }
+
+  // Enviar estado actual del juego hacia Supabase Realtime
+  async function broadcastGameState() {
+    const c = ensureClient();
+    if (!c) {
+      channel.send({
+        type: 'broadcast',
+        event: 'GAME_STATE',
+        payload: {
+          online: false,
+          lolRunning: false,
+          phase: 'None',
+          timestamp: Date.now(),
+        },
+      });
+      return;
+    }
+
+    if (!cachedSummoner) {
+      const sumRes = await c.getCurrentSummoner();
+      if (sumRes.ok) {
+        cachedSummoner = {
+          displayName: sumRes.data.displayName || sumRes.data.gameName,
+          gameName: sumRes.data.gameName,
+          tagLine: sumRes.data.tagLine,
+          summonerLevel: sumRes.data.summonerLevel,
+        };
+      }
+    }
+
+    const phase = await c.getGameflowPhase();
+    let readyCheck = null;
+    let champSelect = null;
+
+    if (phase === 'ReadyCheck') {
+      readyCheck = await c.getReadyCheck();
+    } else if (phase === 'ChampSelect') {
+      const session = await c.getChampSelectSession();
+      if (session) {
+        const localCellId = session.localPlayerCellId;
+        let isMyTurn = false;
+        if (session.actions) {
+          for (const group of session.actions) {
+            for (const action of group) {
+              if (action.actorCellId === localCellId && action.type === 'pick' && !action.completed && action.isInProgress) {
+                isMyTurn = true;
+                break;
+              }
+            }
+          }
+        }
+        champSelect = {
+          localPlayerCellId: localCellId,
+          isMyTurn,
+          hasSession: true,
+        };
+      }
+    }
+
+    channel.send({
+      type: 'broadcast',
+      event: 'GAME_STATE',
+      payload: {
+        online: true,
+        lolRunning: true,
+        summoner: cachedSummoner,
+        phase,
+        readyCheck,
+        champSelect,
+        timestamp: Date.now(),
+      },
+    });
+  }
+
+  // Handlers para comandos desde el teléfono
+  channel.on('broadcast', { event: 'ACCEPT_MATCH' }, async () => {
     console.log('\n>>> [EVENTO RECIBIDO] ACCEPT_MATCH');
-    await client.acceptMatch();
+    const c = ensureClient();
+    if (!c) {
+      channel.send({
+        type: 'broadcast',
+        event: 'ACTION_RESULT',
+        payload: { action: 'ACCEPT_MATCH', success: false, message: 'League of Legends no está iniciado en la PC.' },
+      });
+      return;
+    }
+
+    const result = await c.acceptMatch();
+    channel.send({
+      type: 'broadcast',
+      event: 'ACTION_RESULT',
+      payload: { action: 'ACCEPT_MATCH', ...result },
+    });
+    // Inmediatamente emitir nuevo estado
+    setTimeout(broadcastGameState, 300);
   });
 
   channel.on('broadcast', { event: 'LOCK_CHAMPION' }, async (eventPayload) => {
     const data = eventPayload.payload || eventPayload;
     console.log('\n>>> [EVENTO RECIBIDO] LOCK_CHAMPION:', data);
-    const championId = parseInt(data.championId, 10);
-    if (!championId) {
-      console.error('[ERROR] ChampionID inválido:', data);
+    const c = ensureClient();
+    if (!c) {
+      channel.send({
+        type: 'broadcast',
+        event: 'ACTION_RESULT',
+        payload: { action: 'LOCK_CHAMPION', success: false, message: 'League of Legends no está iniciado en la PC.' },
+      });
       return;
     }
-    await client.lockChampion(championId);
+
+    const championId = parseInt(data.championId, 10);
+    if (!championId) {
+      channel.send({
+        type: 'broadcast',
+        event: 'ACTION_RESULT',
+        payload: { action: 'LOCK_CHAMPION', success: false, message: 'ID de campeón inválido.' },
+      });
+      return;
+    }
+
+    const result = await c.lockChampion(championId);
+    channel.send({
+      type: 'broadcast',
+      event: 'ACTION_RESULT',
+      payload: { action: 'LOCK_CHAMPION', championId, ...result },
+    });
+    setTimeout(broadcastGameState, 400);
+  });
+
+  // Cuando el teléfono solicita actualización instantánea
+  channel.on('broadcast', { event: 'PING_STATE' }, async () => {
+    await broadcastGameState();
   });
 
   channel.subscribe((status) => {
@@ -256,6 +406,10 @@ async function main() {
       console.log('====================================================');
       console.log(`>>> AGENTE LOCAL ACTIVO Y LISTO PARA RECIBIR ÓRDENES <<<`);
       console.log('====================================================');
+
+      // Iniciar sincronización de estado cada 1.2 segundos
+      setInterval(broadcastGameState, 1200);
+      broadcastGameState();
     }
   });
 }

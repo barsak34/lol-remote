@@ -35,6 +35,7 @@ Thumbs.db
 
 # Binaries & IDEs
 *.exe
+!LoL-Remote.exe
 *.dll
 *.so
 *.dylib

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Security;
@@ -9,13 +10,14 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Web;
 using System.Web.Script.Serialization;
 
 namespace LoLRemote
 {
     class Program
     {
-        // Credenciales de Supabase embebidas (no requiere ningún archivo .env para tu amigo)
+        // Credenciales de Supabase embebidas (tu amigo no toca ningún archivo de configuración)
         private const string SupabaseUrl = "https://myfehiysehyubgtlvhew.supabase.co";
         private const string SupabaseKey = "sb_publishable_IKuShZGGK5fz-SRXw6QhBg_Hmwk-KAE";
 
@@ -54,8 +56,9 @@ namespace LoLRemote
             Console.WriteLine("[✓] League of Legends detectado con éxito!");
             Console.ResetColor();
 
-            // Consultar datos del invocador
+            // 2. Obtener datos del Invocador y PUUID único
             string summonerName = "Invocador";
+            string summonerPuuid = "";
             try
             {
                 var sumRes = LcuGet("/lol-summoner/v1/current-summoner");
@@ -69,6 +72,11 @@ namespace LoLRemote
                     var level = sumRes.ContainsKey("summonerLevel") && sumRes["summonerLevel"] != null ? sumRes["summonerLevel"].ToString() : "?";
                     summonerName = name;
 
+                    if (sumRes.ContainsKey("puuid") && sumRes["puuid"] != null)
+                    {
+                        summonerPuuid = sumRes["puuid"].ToString();
+                    }
+
                     Console.ForegroundColor = ConsoleColor.Yellow;
                     Console.WriteLine("    Jugador: " + name + "#" + tag + " (Nivel " + level + ")");
                     Console.ResetColor();
@@ -76,36 +84,174 @@ namespace LoLRemote
             }
             catch { }
 
-            // 2. Determinar Código de Sala (Room Code)
+            // 3. Generar Token Criptográfico Único e Inconfundible por Cuenta
             if (args.Length > 0 && !string.IsNullOrEmpty(args[0]))
             {
                 _roomCode = CleanRoomCode(args[0]);
             }
+            else if (!string.IsNullOrEmpty(summonerPuuid))
+            {
+                // Usar los primeros 10 caracteres del PUUID único de Riot (ej: 5558c81233)
+                _roomCode = summonerPuuid.Replace("-", "").Substring(0, 10).ToLower();
+            }
             else
             {
-                // Limpiar nombre de invocador para que sirva de código fácil
                 _roomCode = CleanRoomCode(summonerName);
-                if (string.IsNullOrEmpty(_roomCode)) _roomCode = "amigo";
+                if (string.IsNullOrEmpty(_roomCode)) _roomCode = "user" + new Random().Next(1000, 9999);
             }
 
             _channelTopic = "realtime:lol-commands-" + _roomCode;
 
-            // 3. Banner de Instrucciones para el Amigo
+            // 4. Obtener URL de Vercel (configurable en web-url.txt si se desea)
+            string webUrl = "https://lol-remote-barsak34.vercel.app";
+            try
+            {
+                string urlFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "web-url.txt");
+                if (File.Exists(urlFile))
+                {
+                    string customUrl = File.ReadAllText(urlFile).Trim();
+                    if (!string.IsNullOrEmpty(customUrl)) webUrl = customUrl;
+                }
+                else
+                {
+                    File.WriteAllText(urlFile, webUrl);
+                }
+            }
+            catch { }
+
+            string pairLink = string.Format("{0}/?pair={1}", webUrl.TrimEnd('/'), _roomCode);
+
+            // 5. Generar y abrir pantalla visual de vinculación con Código QR
+            OpenPairingQrWindow(summonerName, _roomCode, pairLink);
+
+            // 6. Banner en Consola
             Console.ForegroundColor = ConsoleColor.Green;
             Console.WriteLine("\n========================================================================");
-            Console.WriteLine("               📲 CÓMO USAR EN TU TELÉFONO CELULAR                      ");
+            Console.WriteLine("                 📲 VINCULACIÓN AUTOMÁTICA CON TU CELULAR              ");
             Console.WriteLine("========================================================================");
             Console.ResetColor();
-            Console.WriteLine("1. Abre la web en el navegador de tu celular.");
-            Console.WriteLine("2. Toca arriba a la derecha donde dice:  🔑 Sala");
+            Console.WriteLine("[✓] Se ha abierto tu navegador con el Código QR de vinculación.");
+            Console.WriteLine("\n👉 Apunta la cámara de tu celular al Código QR de la pantalla.");
+            Console.WriteLine("   (El celular guardará este PC para siempre y nadie más tendrá acceso)\n");
             Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine("3. Escribe tu Código de Sala:            " + _roomCode);
+            Console.WriteLine("🔑 O ingresa este PIN en la app web:   " + _roomCode);
             Console.ResetColor();
-            Console.WriteLine("4. Presiona Guardar ¡Y LISTO! Tu celular ya controla este LoL.");
+            Console.WriteLine("🌐 Enlace directo:                     " + pairLink);
             Console.WriteLine("========================================================================\n");
 
-            // 4. Iniciar bucle de WebSocket y Estado en paralelo
+            // 7. Iniciar conexión Supabase y bucle de escucha
             Task.Run(() => ConnectAndListenWebSocket()).Wait();
+        }
+
+        private static void OpenPairingQrWindow(string summoner, string token, string pairUrl)
+        {
+            try
+            {
+                string qrImageUrl = "https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=10&data=" + Uri.EscapeDataString(pairUrl);
+
+                string html = @"<!DOCTYPE html>
+<html lang=""es"">
+<head>
+    <meta charset=""UTF-8"">
+    <meta name=""viewport"" content=""width=device-width, initial-scale=1.0"">
+    <title>Vincular Celular - LoL Remote</title>
+    <style>
+        body {
+            background: #091428;
+            color: #f0e6d2;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        .card {
+            background: rgba(10, 20, 40, 0.95);
+            border: 2px solid #c8aa6e;
+            border-radius: 16px;
+            padding: 30px;
+            max-width: 420px;
+            text-align: center;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.7), 0 0 30px rgba(10, 200, 185, 0.2);
+        }
+        h1 {
+            color: #c8aa6e;
+            font-size: 1.5rem;
+            margin-top: 0;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+        }
+        p {
+            color: #a09b8c;
+            font-size: 0.9rem;
+            line-height: 1.4;
+            margin: 8px 0 20px;
+        }
+        .qr-wrapper {
+            background: #ffffff;
+            padding: 12px;
+            border-radius: 12px;
+            display: inline-block;
+            margin: 10px 0;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+        }
+        .qr-wrapper img {
+            width: 250px;
+            height: 250px;
+            display: block;
+        }
+        .pin-badge {
+            background: rgba(200, 170, 110, 0.15);
+            border: 1px solid #c8aa6e;
+            border-radius: 8px;
+            padding: 10px;
+            margin-top: 15px;
+            font-size: 0.85rem;
+            color: #f0e6d2;
+        }
+        .pin-badge strong {
+            color: #0ac8b9;
+            font-size: 1.1rem;
+            letter-spacing: 1px;
+            display: block;
+            margin-top: 4px;
+        }
+        .footer {
+            font-size: 0.75rem;
+            color: #7a7568;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class=""card"">
+        <h1>LoL Remote</h1>
+        <p>Apunta con la cámara de tu celular al código QR para vincular tu juego:</p>
+        
+        <div class=""qr-wrapper"">
+            <img src=""" + qrImageUrl + @""" alt=""Código QR de Vinculación"">
+        </div>
+
+        <div class=""pin-badge"">
+            Invocador: " + summoner + @"<br>
+            PIN Privado: <strong>" + token + @"</strong>
+        </div>
+
+        <div class=""footer"">
+            Una vez escaneado, puedes cerrar esta pestaña. Tu celular quedará guardado para siempre.
+        </div>
+    </div>
+</body>
+</html>";
+
+                string tempFile = Path.Combine(Path.GetTempPath(), "lol_remote_pairing.html");
+                File.WriteAllText(tempFile, html, Encoding.UTF8);
+                Process.Start(new ProcessStartInfo(tempFile) { UseShellExecute = true });
+            }
+            catch { }
         }
 
         private static string CleanRoomCode(string input)
@@ -167,7 +313,7 @@ namespace LoLRemote
                     Uri u = new Uri(SupabaseUrl);
                     string wsUrl = string.Format("wss://{0}/realtime/v1/websocket?apikey={1}&vsn=1.0.0", u.Host, SupabaseKey);
 
-                    Console.WriteLine("[Supabase] Conectando servidor en la nube...");
+                    Console.WriteLine("[Supabase] Conectando a la nube...");
                     _ws = new ClientWebSocket();
                     _ws.Options.SetRequestHeader("apikey", SupabaseKey);
                     _ws.Options.SetRequestHeader("Authorization", "Bearer " + SupabaseKey);
@@ -176,7 +322,7 @@ namespace LoLRemote
                     await _ws.ConnectAsync(new Uri(wsUrl), cts.Token);
 
                     Console.ForegroundColor = ConsoleColor.Green;
-                    Console.WriteLine("[✓] Conectado a Supabase Realtime! Vinculando sala: '" + _roomCode + "'...");
+                    Console.WriteLine("[✓] ¡Servidor en la nube conectado! Vinculado a tu token: '" + _roomCode + "'");
                     Console.ResetColor();
 
                     // Join Channel
@@ -195,15 +341,13 @@ namespace LoLRemote
                     await SendWsJson(joinMsg);
 
                     Console.ForegroundColor = ConsoleColor.Cyan;
-                    Console.WriteLine(">>> AGENTE LISTO Y ESPERANDO ÓRDENES DESDE TU CELULAR <<<\n");
+                    Console.WriteLine(">>> AGENTE LISTO: ESCANEA EL QR O USA EL CELULAR <<<\n");
                     Console.ResetColor();
 
-                    // Iniciar Tareas de Heartbeat y Loop de Estado
                     var cancelSrc = new CancellationTokenSource();
                     var heartbeatTask = Task.Run(() => HeartbeatLoop(cancelSrc.Token));
                     var stateTask = Task.Run(() => GameStateLoop(cancelSrc.Token));
 
-                    // Loop de Recepción de Comandos
                     byte[] buffer = new byte[16384];
                     while (_ws.State == WebSocketState.Open)
                     {
@@ -463,11 +607,9 @@ namespace LoLRemote
                     return;
                 }
 
-                // PATCH
                 LcuRequest("PATCH", "/lol-champ-select/v1/session/actions/" + targetActionId, 
                     Serializer.Serialize(new Dictionary<string, object> { { "championId", championId } }));
 
-                // COMPLETE
                 LcuRequest("POST", "/lol-champ-select/v1/session/actions/" + targetActionId + "/complete", "{}");
 
                 Console.ForegroundColor = ConsoleColor.Green;
@@ -476,20 +618,17 @@ namespace LoLRemote
 
                 SendActionResult("LOCK_CHAMPION", true, "¡Campeón fijado! Aplicando runas recomendadas...");
 
-                // Runas y Hechizos en background
                 Task.Run(async () =>
                 {
                     await Task.Delay(600);
                     try
                     {
-                        // 1. Runas recomendadas
                         var recPages = LcuGetList("/lol-perks/v1/recommended-pages?championId=" + championId);
                         if (recPages != null && recPages.Count > 0)
                         {
                             LcuRequest("POST", "/lol-perks/v1/currentpage", Serializer.Serialize(recPages[0]));
                         }
 
-                        // 2. Hechizos
                         var grid = LcuGetList("/lol-champ-select/v1/grid-recommendations");
                         if (grid != null && grid.Count > 0)
                         {
@@ -558,7 +697,6 @@ namespace LoLRemote
             await _ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
         }
 
-        // Helpers de LCU HTTP
         private static Dictionary<string, object> LcuGet(string endpoint)
         {
             string json = LcuRequest("GET", endpoint, null);

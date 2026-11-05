@@ -75,12 +75,31 @@ export default function HomePage() {
   const lastStateTime = useRef<number>(0);
   const prevPhase = useRef<string>('None');
 
-  // Cargar roomCode persistido desde localStorage al iniciar
+  // Cargar o emparejar automáticamente mediante Código QR (?pair=TOKEN) o localStorage
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('lol_remote_room') || '';
-      setRoomCode(saved);
-      setRoomInput(saved);
+      const urlParams = new URLSearchParams(window.location.search);
+      const pairParam = urlParams.get('pair') || urlParams.get('token') || urlParams.get('room');
+
+      if (pairParam) {
+        const cleanToken = pairParam.trim().toLowerCase();
+        setRoomCode(cleanToken);
+        setRoomInput(cleanToken);
+        localStorage.setItem('lol_remote_room', cleanToken);
+
+        // Limpiar la URL en la barra del navegador para que quede estéticamente limpia
+        const cleanUrl = window.location.pathname;
+        window.history.replaceState({}, '', cleanUrl);
+
+        setStatusBanner({
+          text: '🎉 ¡PC Vinculada con éxito mediante Código QR!',
+          type: 'success',
+        });
+      } else {
+        const saved = localStorage.getItem('lol_remote_room') || '';
+        setRoomCode(saved);
+        setRoomInput(saved);
+      }
     }
   }, []);
 

@@ -100,3 +100,23 @@ El sistema **NO requiere estar en la misma red WiFi**. Como la comunicación se 
    - `NEXT_PUBLIC_SUPABASE_CHANNEL`: `lol-commands`
 4. Haz click en **Deploy**.
 5. Abre la URL generada por Vercel (ej: `https://lol-remote-xxx.vercel.app`) en el navegador de tu celular y guárdala en la pantalla de inicio como acceso directo.
+
+
+---
+
+## 5. ¿Cómo compartir la app con amigos (Multi-Usuario)?
+
+Para que tú y tus amigos puedan usar la **misma app de Vercel** sin interferir entre ustedes, cada uno usa un **Código de Sala / Room Code** único (ej: `maxi` y `juan`):
+
+### Pasos para tu amigo:
+1. Tu amigo se descarga la carpeta del proyecto o clona el repositorio en su PC.
+2. En `local-agent/.env`, coloca:
+   ```env
+   SUPABASE_URL=https://myfehiysehyubgtlvhew.supabase.co
+   SUPABASE_ANON_KEY=sb_publishable_IKuShZGGK5fz-SRXw6QhBg_Hmwk-KAE
+   ROOM_CODE=juan
+   ```
+3. Ejecuta `run-agent.bat` en su PC con LoL abierto (se instalarán las dependencias necesarias automáticamente).
+4. Abre tu enlace de Vercel en el celular, toca el botón **`🔑 Sala`** arriba a la derecha, escribe `juan` y toca **Guardar**.
+
+¡Listo! El celular de tu amigo solo controlará su PC, y tu celular solo controlará la tuya.

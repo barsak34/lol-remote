@@ -26,7 +26,9 @@ function loadEnv() {
 const env = loadEnv();
 const SUPABASE_URL = env.SUPABASE_URL || process.env.SUPABASE_URL;
 const SUPABASE_KEY = env.SUPABASE_ANON_KEY || env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY;
-const SUPABASE_CHANNEL = env.SUPABASE_CHANNEL || 'lol-commands';
+const argRoom = process.argv[2];
+const ROOM_CODE = (argRoom || env.ROOM_CODE || process.env.ROOM_CODE || '').trim().toLowerCase();
+const SUPABASE_CHANNEL = ROOM_CODE ? `lol-commands-${ROOM_CODE}` : (env.SUPABASE_CHANNEL || 'lol-commands');
 
 // 2. Localizar y parsear lockfile dinámicamente
 function getLockfile() {
@@ -239,13 +241,27 @@ async function main() {
     return;
   }
 
-  // Importar createClient desde web-app/node_modules
-  const supabaseModulePath = path.join(__dirname, '..', 'web-app', 'node_modules', '@supabase', 'supabase-js', 'dist', 'index.mjs');
-  const fileUrl = pathToFileURL(supabaseModulePath).href;
-  const { createClient } = await import(fileUrl);
+  // Importar createClient de forma dinámica y flexible
+  let createClient;
+  try {
+    const localModule = path.join(__dirname, 'node_modules', '@supabase', 'supabase-js', 'dist', 'index.mjs');
+    if (fs.existsSync(localModule)) {
+      const res = await import(pathToFileURL(localModule).href);
+      createClient = res.createClient;
+    } else {
+      const parentModule = path.join(__dirname, '..', 'web-app', 'node_modules', '@supabase', 'supabase-js', 'dist', 'index.mjs');
+      const res = await import(pathToFileURL(parentModule).href);
+      createClient = res.createClient;
+    }
+  } catch (err) {
+    const res = await import('@supabase/supabase-js');
+    createClient = res.createClient;
+  }
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-  console.log(`[Supabase Realtime] Conectando a ${SUPABASE_URL} (Canal: '${SUPABASE_CHANNEL}')...`);
+  console.log(`[Supabase Realtime] Conectando a ${SUPABASE_URL}`);
+  console.log(`>>> CANAL ACTIVO: '${SUPABASE_CHANNEL}' ${ROOM_CODE ? `(Código de Sala: "${ROOM_CODE}")` : '(Sala por Defecto)'} <<<`);
+  console.log(`(Asegúrate de colocar este mismo código de sala en tu celular)`);
 
   const channel = supabase.channel(SUPABASE_CHANNEL, {
     config: { broadcast: { ack: true, self: true } },

@@ -1,0 +1,13 @@
+{
+  "name": "lol-remote-local-agent",
+  "version": "1.0.0",
+  "description": "Agente Local en Windows para LoL Remote",
+  "main": "agent.mjs",
+  "type": "module",
+  "scripts": {
+    "start": "node agent.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.46.1"
+  }
+}

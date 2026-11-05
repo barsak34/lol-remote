@@ -59,6 +59,9 @@ export default function HomePage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusBanner, setStatusBanner] = useState<{ text: string; type: 'info' | 'success' | 'error' | 'warning' } | null>(null);
   const [channelStatus, setChannelStatus] = useState<'DISCONNECTED' | 'CONNECTING' | 'CONNECTED'>('CONNECTING');
+  const [roomCode, setRoomCode] = useState<string>('');
+  const [isEditingRoom, setIsEditingRoom] = useState<boolean>(false);
+  const [roomInput, setRoomInput] = useState<string>('');
   const [gameState, setGameState] = useState<GameState>({
     online: false,
     lolRunning: false,
@@ -71,6 +74,15 @@ export default function HomePage() {
   const channelRef = useRef<RealtimeChannel | null>(null);
   const lastStateTime = useRef<number>(0);
   const prevPhase = useRef<string>('None');
+
+  // Cargar roomCode persistido desde localStorage al iniciar
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('lol_remote_room') || '';
+      setRoomCode(saved);
+      setRoomInput(saved);
+    }
+  }, []);
 
   // 1. Fetch complete champions list from Riot Data Dragon
   useEffect(() => {
@@ -115,7 +127,9 @@ export default function HomePage() {
       return;
     }
 
-    const channelName = process.env.NEXT_PUBLIC_SUPABASE_CHANNEL || 'lol-commands';
+    const defaultChannel = process.env.NEXT_PUBLIC_SUPABASE_CHANNEL || 'lol-commands';
+    const channelName = roomCode.trim() ? `lol-commands-${roomCode.trim().toLowerCase()}` : defaultChannel;
+    
     const channel = supabase.channel(channelName, {
       config: {
         broadcast: { ack: true, self: true },
@@ -172,7 +186,28 @@ export default function HomePage() {
       clearInterval(watchdog);
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [roomCode]);
+
+  // Guardar y cambiar de sala
+  const handleSaveRoom = (newCode: string) => {
+    const clean = newCode.trim().toLowerCase();
+    setRoomCode(clean);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('lol_remote_room', clean);
+    }
+    setIsEditingRoom(false);
+    // Reset estado momentáneo al cambiar de canal
+    setGameState({
+      online: false,
+      lolRunning: false,
+      phase: 'None',
+      timestamp: 0,
+    });
+    setStatusBanner({
+      text: clean ? `Conectando a sala "${clean}"...` : 'Conectando a sala general...',
+      type: 'info',
+    });
+  };
 
   // Filter champions based on query
   const filteredChampions = champions.filter((c) =>
@@ -326,34 +361,120 @@ export default function HomePage() {
           </p>
         </div>
 
-        {/* Status Pill */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '6px',
-          padding: '4px 10px',
-          borderRadius: '999px',
-          fontSize: '0.68rem',
-          fontWeight: 700,
-          backgroundColor:
-            gameState.online
-              ? 'rgba(37, 187, 132, 0.2)'
-              : 'rgba(232, 64, 87, 0.2)',
-          color:
-            gameState.online
-              ? 'var(--riot-green)'
-              : 'var(--riot-red)',
-          border: `1px solid ${gameState.online ? 'var(--riot-green)' : 'var(--riot-red)'}`,
-        }}>
-          <span style={{
-            width: '7px',
-            height: '7px',
-            borderRadius: '50%',
-            backgroundColor: gameState.online ? 'var(--riot-green)' : 'var(--riot-red)',
-          }} />
-          {gameState.online ? 'PC CONECTADA' : 'PC OFFLINE'}
+        {/* Status Pill & Room Button */}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '6px' }}>
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            padding: '4px 10px',
+            borderRadius: '999px',
+            fontSize: '0.68rem',
+            fontWeight: 700,
+            backgroundColor:
+              gameState.online
+                ? 'rgba(37, 187, 132, 0.2)'
+                : 'rgba(232, 64, 87, 0.2)',
+            color:
+              gameState.online
+                ? 'var(--riot-green)'
+                : 'var(--riot-red)',
+            border: `1px solid ${gameState.online ? 'var(--riot-green)' : 'var(--riot-red)'}`,
+          }}>
+            <span style={{
+              width: '7px',
+              height: '7px',
+              borderRadius: '50%',
+              backgroundColor: gameState.online ? 'var(--riot-green)' : 'var(--riot-red)',
+            }} />
+            {gameState.online ? 'PC CONECTADA' : 'PC OFFLINE'}
+          </div>
+
+          <button
+            onClick={() => {
+              setRoomInput(roomCode);
+              setIsEditingRoom(!isEditingRoom);
+            }}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+              padding: '3px 8px',
+              borderRadius: '6px',
+              fontSize: '0.65rem',
+              fontWeight: 600,
+              backgroundColor: 'rgba(200, 170, 110, 0.15)',
+              color: 'var(--hextech-gold)',
+              border: '1px solid var(--border-gold)',
+              cursor: 'pointer',
+            }}
+          >
+            <span>🔑</span>
+            <span>{roomCode ? `Sala: ${roomCode}` : 'Sala: General'}</span>
+            <span style={{ fontSize: '0.55rem', opacity: 0.7 }}>✏️</span>
+          </button>
         </div>
       </header>
+
+      {/* Editor de Código de Sala (Para compartir con amigos) */}
+      {isEditingRoom && (
+        <div style={{
+          padding: '14px',
+          borderRadius: '12px',
+          backgroundColor: 'rgba(9, 20, 40, 0.95)',
+          border: '1px solid var(--hextech-gold)',
+          boxShadow: '0 4px 20px rgba(0, 0, 0, 0.6)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '10px',
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.85rem', fontWeight: 800, color: 'var(--hextech-gold)' }}>
+              🔑 Código de Sala / Vinculación
+            </span>
+            <button
+              onClick={() => setIsEditingRoom(false)}
+              style={{ background: 'transparent', color: 'var(--text-muted)', fontSize: '0.85rem', cursor: 'pointer' }}
+            >
+              ✕
+            </button>
+          </div>
+          <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>
+            Si tú y tus amigos usan la misma app web, cada uno debe poner aquí el <strong>mismo código</strong> configurado en el archivo <code>.env</code> de su PC (<code>ROOM_CODE</code>). Así cada celular solo controla su propia computadora.
+          </p>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <input
+              type="text"
+              placeholder="Ej: maxi, juan, sala1..."
+              value={roomInput}
+              onChange={(e) => setRoomInput(e.target.value)}
+              style={{
+                flex: 1,
+                padding: '8px 12px',
+                backgroundColor: 'rgba(5, 12, 24, 0.9)',
+                border: '1px solid var(--border-gold)',
+                borderRadius: '6px',
+                color: 'var(--text-main)',
+                fontSize: '0.85rem',
+              }}
+            />
+            <button
+              onClick={() => handleSaveRoom(roomInput)}
+              style={{
+                padding: '8px 14px',
+                borderRadius: '6px',
+                background: 'var(--hextech-gold)',
+                color: '#091428',
+                fontWeight: 800,
+                fontSize: '0.8rem',
+                cursor: 'pointer',
+              }}
+            >
+              Guardar
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Banner de Aviso si el PC no está conectado */}
       {!gameState.online && (

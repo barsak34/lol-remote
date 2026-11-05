@@ -103,19 +103,11 @@ namespace LoLRemote
             _channelTopic = "realtime:lol-commands-" + _roomCode;
 
             // 4. Obtener URL de Vercel (configurable en web-url.txt si se desea)
-            string webUrl = "https://lol-remote-barsak34.vercel.app";
+            string webUrl = "https://lol-remote-tau.vercel.app";
             try
             {
                 string urlFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "web-url.txt");
-                if (File.Exists(urlFile))
-                {
-                    string customUrl = File.ReadAllText(urlFile).Trim();
-                    if (!string.IsNullOrEmpty(customUrl)) webUrl = customUrl;
-                }
-                else
-                {
-                    File.WriteAllText(urlFile, webUrl);
-                }
+                File.WriteAllText(urlFile, webUrl);
             }
             catch { }
 

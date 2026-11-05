@@ -1,17 +1,20 @@
 @charset "UTF-8";
 
 :root {
-  --bg-dark: #091428;
-  --bg-card: rgba(10, 20, 40, 0.85);
+  --bg-dark: #070e1c;
+  --bg-card: rgba(11, 22, 42, 0.85);
+  --bg-card-hover: rgba(16, 32, 60, 0.95);
   --hextech-gold: #c8aa6e;
   --hextech-gold-bright: #f0e6d2;
+  --hextech-gold-dark: #785a28;
   --hextech-blue: #0ac8b9;
   --hextech-blue-glow: rgba(10, 200, 185, 0.4);
   --riot-red: #e84057;
   --riot-green: #25bb84;
   --text-main: #f0e6d2;
-  --text-muted: #a09b8c;
-  --border-gold: rgba(200, 170, 110, 0.4);
+  --text-muted: #8d94a5;
+  --border-gold: rgba(200, 170, 110, 0.35);
+  --border-subtle: rgba(255, 255, 255, 0.08);
 }
 
 * {
@@ -25,8 +28,8 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   background-color: var(--bg-dark);
   background-image: 
-    radial-gradient(circle at 50% 0%, rgba(10, 200, 185, 0.15) 0%, transparent 60%),
-    radial-gradient(circle at 50% 100%, rgba(200, 170, 110, 0.1) 0%, transparent 70%);
+    radial-gradient(circle at 50% -10%, rgba(10, 200, 185, 0.2) 0%, transparent 60%),
+    radial-gradient(circle at 50% 110%, rgba(200, 170, 110, 0.12) 0%, transparent 70%);
   color: var(--text-main);
   min-height: 100vh;
   display: flex;
@@ -41,6 +44,7 @@ button {
   cursor: pointer;
   border: none;
   outline: none;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 input, select {
@@ -48,19 +52,56 @@ input, select {
   outline: none;
 }
 
-/* Animations */
+/* Custom minimal scrollbar */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(5, 12, 24, 0.6);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(200, 170, 110, 0.4);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--hextech-gold);
+}
+
+/* Pulsing Ready Check Animation */
 @keyframes pulse-ring {
   0% {
-    box-shadow: 0 0 0 0 rgba(37, 187, 132, 0.7);
+    box-shadow: 0 0 0 0 rgba(37, 187, 132, 0.7), 0 0 25px rgba(10, 200, 185, 0.5);
   }
   70% {
-    box-shadow: 0 0 0 20px rgba(37, 187, 132, 0);
+    box-shadow: 0 0 0 20px rgba(37, 187, 132, 0), 0 0 35px rgba(10, 200, 185, 0);
   }
   100% {
-    box-shadow: 0 0 0 0 rgba(37, 187, 132, 0);
+    box-shadow: 0 0 0 0 rgba(37, 187, 132, 0), 0 0 25px rgba(10, 200, 185, 0.5);
   }
 }
 
 .ready-check-pulse {
   animation: pulse-ring 2s infinite;
+}
+
+/* Searching Radar Animation */
+@keyframes radar-pulse {
+  0% {
+    transform: scale(0.95);
+    opacity: 0.6;
+  }
+  50% {
+    transform: scale(1.05);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(0.95);
+    opacity: 0.6;
+  }
+}
+
+.radar-glow {
+  animation: radar-pulse 2.2s infinite ease-in-out;
 }

@@ -42,15 +42,15 @@ interface GameState {
 }
 
 const FALLBACK_CHAMPIONS: Champion[] = [
-  { id: 'Aatrox', key: 266, name: 'Aatrox', title: 'the Darkin Blade', iconUrl: 'https://ddragon.leagueoflegends.com/cdn/14.23.1/img/champion/Aatrox.png' },
-  { id: 'Ahri', key: 103, name: 'Ahri', title: 'the Nine-Tailed Fox', iconUrl: 'https://ddragon.leagueoflegends.com/cdn/14.23.1/img/champion/Ahri.png' },
-  { id: 'Jinx', key: 222, name: 'Jinx', title: 'the Loose Cannon', iconUrl: 'https://ddragon.leagueoflegends.com/cdn/14.23.1/img/champion/Jinx.png' },
-  { id: 'LeeSin', key: 64, name: 'Lee Sin', title: 'the Blind Monk', iconUrl: 'https://ddragon.leagueoflegends.com/cdn/14.23.1/img/champion/LeeSin.png' },
-  { id: 'Lux', key: 99, name: 'Lux', title: 'the Lady of Luminosity', iconUrl: 'https://ddragon.leagueoflegends.com/cdn/14.23.1/img/champion/Lux.png' },
-  { id: 'Thresh', key: 412, name: 'Thresh', title: 'the Chain Warden', iconUrl: 'https://ddragon.leagueoflegends.com/cdn/14.23.1/img/champion/Thresh.png' },
-  { id: 'Yasuo', key: 157, name: 'Yasuo', title: 'the Unforgiven', iconUrl: 'https://ddragon.leagueoflegends.com/cdn/14.23.1/img/champion/Yasuo.png' },
-  { id: 'Yone', key: 777, name: 'Yone', title: 'the Unforgotten', iconUrl: 'https://ddragon.leagueoflegends.com/cdn/14.23.1/img/champion/Yone.png' },
-  { id: 'Zed', key: 238, name: 'Zed', title: 'the Master of Shadows', iconUrl: 'https://ddragon.leagueoflegends.com/cdn/14.23.1/img/champion/Zed.png' },
+  { id: 'Aatrox', key: 266, name: 'Aatrox', title: 'la Espada de los Oscuros', iconUrl: 'https://ddragon.leagueoflegends.com/cdn/14.23.1/img/champion/Aatrox.png' },
+  { id: 'Ahri', key: 103, name: 'Ahri', title: 'la Mujer Zorro de Nueve Colas', iconUrl: 'https://ddragon.leagueoflegends.com/cdn/14.23.1/img/champion/Ahri.png' },
+  { id: 'Jinx', key: 222, name: 'Jinx', title: 'la Bala Perdida', iconUrl: 'https://ddragon.leagueoflegends.com/cdn/14.23.1/img/champion/Jinx.png' },
+  { id: 'LeeSin', key: 64, name: 'Lee Sin', title: 'el Monje Ciego', iconUrl: 'https://ddragon.leagueoflegends.com/cdn/14.23.1/img/champion/LeeSin.png' },
+  { id: 'Lux', key: 99, name: 'Lux', title: 'la Dama Luminosa', iconUrl: 'https://ddragon.leagueoflegends.com/cdn/14.23.1/img/champion/Lux.png' },
+  { id: 'Thresh', key: 412, name: 'Thresh', title: 'el Carcelero de las Cadenas', iconUrl: 'https://ddragon.leagueoflegends.com/cdn/14.23.1/img/champion/Thresh.png' },
+  { id: 'Yasuo', key: 157, name: 'Yasuo', title: 'el Imperdonable', iconUrl: 'https://ddragon.leagueoflegends.com/cdn/14.23.1/img/champion/Yasuo.png' },
+  { id: 'Yone', key: 777, name: 'Yone', title: 'el Inolvidado', iconUrl: 'https://ddragon.leagueoflegends.com/cdn/14.23.1/img/champion/Yone.png' },
+  { id: 'Zed', key: 238, name: 'Zed', title: 'el Maestro de las Sombras', iconUrl: 'https://ddragon.leagueoflegends.com/cdn/14.23.1/img/champion/Zed.png' },
 ];
 
 export default function HomePage() {
@@ -72,7 +72,7 @@ export default function HomePage() {
   const lastStateTime = useRef<number>(0);
   const prevPhase = useRef<string>('None');
 
-  // 1. Fetch champions from Riot Data Dragon
+  // 1. Fetch complete champions list from Riot Data Dragon
   useEffect(() => {
     async function loadChampions() {
       try {
@@ -85,7 +85,7 @@ export default function HomePage() {
 
         const list: Champion[] = Object.values(champData.data).map((c: any) => ({
           id: c.id,
-          key: parseInt(c.key, 10),
+          key: Number(c.key),
           name: c.name,
           title: c.title,
           iconUrl: `https://ddragon.leagueoflegends.com/cdn/${latestVer}/img/champion/${c.image.full}`,
@@ -94,7 +94,7 @@ export default function HomePage() {
         list.sort((a, b) => a.name.localeCompare(b.name));
         setChampions(list);
         if (list.length > 0) {
-          setSelectedChampionId(list[0].key);
+          setSelectedChampionId(Number(list[0].key));
         }
       } catch (err) {
         console.warn('Error fetching Data Dragon champions, using fallback:', err);
@@ -122,13 +122,11 @@ export default function HomePage() {
       },
     });
 
-    // Escuchar el estado sincronizado en vivo desde el PC
     channel.on('broadcast', { event: 'GAME_STATE' }, (payload: any) => {
       const state: GameState = payload.payload || payload;
       lastStateTime.current = Date.now();
       setGameState(state);
 
-      // Si recién entra en ReadyCheck y antes no lo estaba, vibrar el teléfono
       if (state.phase === 'ReadyCheck' && prevPhase.current !== 'ReadyCheck') {
         if (typeof window !== 'undefined' && 'vibrate' in navigator) {
           try {
@@ -139,7 +137,6 @@ export default function HomePage() {
       prevPhase.current = state.phase;
     });
 
-    // Escuchar respuestas de acciones procesadas por la PC
     channel.on('broadcast', { event: 'ACTION_RESULT' }, (payload: any) => {
       const res = payload.payload || payload;
       setStatusBanner({
@@ -151,7 +148,6 @@ export default function HomePage() {
     channel.subscribe((status) => {
       if (status === 'SUBSCRIBED') {
         setChannelStatus('CONNECTED');
-        // Solicitar el estado actual al agente de inmediato
         channel.send({
           type: 'broadcast',
           event: 'PING_STATE',
@@ -166,7 +162,6 @@ export default function HomePage() {
 
     channelRef.current = channel;
 
-    // Timer para marcar PC como Offline si no emite estado en 4 segundos
     const watchdog = setInterval(() => {
       if (Date.now() - lastStateTime.current > 4000) {
         setGameState((prev) => (prev.online ? { ...prev, online: false } : prev));
@@ -178,6 +173,35 @@ export default function HomePage() {
       supabase.removeChannel(channel);
     };
   }, []);
+
+  // Filter champions based on query
+  const filteredChampions = champions.filter((c) =>
+    c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    c.id.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  // Manejo de búsqueda y auto-selección de coincidencia
+  const handleSearchChange = (query: string) => {
+    setSearchQuery(query);
+    const matches = champions.filter((c) =>
+      c.name.toLowerCase().includes(query.toLowerCase()) ||
+      c.id.toLowerCase().includes(query.toLowerCase())
+    );
+    if (matches.length > 0) {
+      setSelectedChampionId(matches[0].key);
+    }
+  };
+
+  // Selección directa de campeón
+  const handleSelectChampion = (champion: Champion) => {
+    setSelectedChampionId(champion.key);
+  };
+
+  // Campeón actualmente seleccionado con fallback seguro
+  const selectedChamp =
+    champions.find((c) => Number(c.key) === Number(selectedChampionId)) ||
+    champions[0] ||
+    FALLBACK_CHAMPIONS[0];
 
   // Enviar orden de Aceptar Partida
   const handleAcceptMatch = async () => {
@@ -208,8 +232,7 @@ export default function HomePage() {
 
   // Enviar orden de Fijar Campeón
   const handleLockChampion = async () => {
-    const currentChamp = champions.find((c) => c.key === selectedChampionId);
-    if (!currentChamp) return;
+    if (!selectedChamp) return;
 
     if (!channelRef.current || channelStatus !== 'CONNECTED') {
       setStatusBanner({ text: 'Sin conexión a Supabase Realtime', type: 'error' });
@@ -221,15 +244,15 @@ export default function HomePage() {
     }
 
     setIsLocking(true);
-    setStatusBanner({ text: `Enviando selección de ${currentChamp.name} a la PC...`, type: 'info' });
+    setStatusBanner({ text: `Enviando selección de ${selectedChamp.name} a la PC...`, type: 'info' });
 
     try {
       await channelRef.current.send({
         type: 'broadcast',
         event: 'LOCK_CHAMPION',
         payload: {
-          championId: currentChamp.key,
-          championName: currentChamp.name,
+          championId: selectedChamp.key,
+          championName: selectedChamp.name,
           timestamp: Date.now(),
         },
       });
@@ -240,17 +263,11 @@ export default function HomePage() {
     }
   };
 
-  const selectedChamp = champions.find((c) => c.key === selectedChampionId);
-  const filteredChampions = champions.filter((c) =>
-    c.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
-
   const isReadyCheck = gameState.phase === 'ReadyCheck';
   const hasAccepted = gameState.readyCheck?.playerResponse === 'Accepted';
   const isChampSelect = gameState.phase === 'ChampSelect';
   const isMatchmaking = gameState.phase === 'Matchmaking';
 
-  // Texto legible de fase
   const getPhaseDisplay = () => {
     if (!gameState.online) return 'PC Desconectada';
     if (!gameState.lolRunning) return 'LoL Cerrado';
@@ -349,7 +366,7 @@ export default function HomePage() {
           color: '#f8d7da',
           lineHeight: '1.4',
         }}>
-          ⚠️ <strong>Agente Local no detectado en tu PC:</strong> Asegúrate de ejecutar <code>run-agent.bat</code> o <code>node local-agent/agent.mjs</code> en tu computadora con League of Legends abierto.
+          ⚠️ <strong>Agente Local no detectado en tu PC:</strong> Asegúrate de ejecutar <code>LoL-Remote.bat</code> en tu escritorio con League of Legends abierto.
         </div>
       )}
 
@@ -397,7 +414,6 @@ export default function HomePage() {
           : '0 8px 32px rgba(0, 0, 0, 0.4)',
         transition: 'all 0.3s ease',
       }}>
-        {/* CASO A: ¡HAY PARTIDA PARA ACEPTAR! (ReadyCheck) */}
         {isReadyCheck ? (
           <div style={{ width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
             <span style={{
@@ -464,7 +480,6 @@ export default function HomePage() {
             )}
           </div>
         ) : (
-          /* CASO B: NO HAY PARTIDA PARA ACEPTAR EN ESTE MOMENTO */
           <div style={{ width: '100%', textAlign: 'center', padding: '10px 0' }}>
             <span style={{
               fontSize: '0.72rem',
@@ -499,7 +514,7 @@ export default function HomePage() {
                   ? 'Estás en selección de campeón. Puedes fijar tu pick y runas abajo.'
                   : gameState.online
                   ? 'Esperando que entres en cola de emparejamiento...'
-                  : 'Inicia el agente en tu PC para sincronizar el estado.'}
+                  : 'Inicia el archivo LoL-Remote.bat en tu PC para sincronizar.'}
               </div>
             </div>
           </div>
@@ -544,27 +559,91 @@ export default function HomePage() {
           )}
         </div>
 
-        {/* Buscador */}
-        <input
-          type="text"
-          placeholder="Buscar campeón (ej: Yasuo, Ahri)..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          style={{
-            width: '100%',
-            padding: '10px 14px',
-            backgroundColor: 'rgba(9, 20, 40, 0.9)',
-            border: '1px solid var(--border-gold)',
-            borderRadius: '8px',
-            color: 'var(--text-main)',
-            fontSize: '0.9rem',
-          }}
-        />
+        {/* Tarjeta Destacada del Campeón Seleccionado */}
+        {selectedChamp && (
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '14px',
+            padding: '14px',
+            backgroundColor: 'rgba(9, 20, 40, 0.95)',
+            borderRadius: '12px',
+            border: '2px solid var(--hextech-gold)',
+            boxShadow: '0 4px 16px rgba(200, 170, 110, 0.25)',
+          }}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              key={`avatar-${selectedChamp.key}`}
+              src={selectedChamp.iconUrl}
+              alt={selectedChamp.name}
+              style={{
+                width: '64px',
+                height: '64px',
+                borderRadius: '10px',
+                border: '2px solid var(--hextech-gold-bright)',
+                objectFit: 'cover',
+                boxShadow: '0 0 10px rgba(200, 170, 110, 0.4)',
+              }}
+            />
+            <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
+              <span style={{ fontSize: '1.25rem', fontWeight: 900, color: 'var(--hextech-gold-bright)', letterSpacing: '0.5px' }}>
+                {selectedChamp.name}
+              </span>
+              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'capitalize' }}>
+                {selectedChamp.title}
+              </span>
+              <span style={{ fontSize: '0.68rem', color: 'var(--hextech-blue)', marginTop: '3px', fontWeight: 600 }}>
+                LCU ID: {selectedChamp.key}
+              </span>
+            </div>
+          </div>
+        )}
 
-        {/* Dropdown */}
+        {/* Buscador de Campeón con botón de limpiar */}
+        <div style={{ position: 'relative', width: '100%' }}>
+          <input
+            type="text"
+            placeholder="Buscar por nombre (ej: Yasuo, Ahri)..."
+            value={searchQuery}
+            onChange={(e) => handleSearchChange(e.target.value)}
+            style={{
+              width: '100%',
+              padding: '11px 36px 11px 14px',
+              backgroundColor: 'rgba(9, 20, 40, 0.9)',
+              border: '1px solid var(--border-gold)',
+              borderRadius: '8px',
+              color: 'var(--text-main)',
+              fontSize: '0.9rem',
+            }}
+          />
+          {searchQuery && (
+            <button
+              onClick={() => handleSearchChange('')}
+              style={{
+                position: 'absolute',
+                right: '10px',
+                top: '50%',
+                transform: 'translateY(-50%)',
+                background: 'transparent',
+                color: 'var(--text-muted)',
+                fontSize: '1rem',
+                padding: '4px 8px',
+                cursor: 'pointer',
+              }}
+            >
+              ✕
+            </button>
+          )}
+        </div>
+
+        {/* Selector Desplegable Sincronizado */}
         <select
-          value={selectedChampionId}
-          onChange={(e) => setSelectedChampionId(Number(e.target.value))}
+          value={selectedChamp.key}
+          onChange={(e) => {
+            const chosenKey = Number(e.target.value);
+            const found = champions.find((c) => Number(c.key) === chosenKey);
+            if (found) handleSelectChampion(found);
+          }}
           style={{
             width: '100%',
             padding: '12px 14px',
@@ -572,60 +651,88 @@ export default function HomePage() {
             border: '1px solid var(--border-gold)',
             borderRadius: '8px',
             color: 'var(--text-main)',
-            fontSize: '1rem',
+            fontSize: '0.95rem',
             fontWeight: 600,
           }}
         >
-          {filteredChampions.map((c) => (
+          {champions.map((c) => (
             <option key={c.key} value={c.key} style={{ background: '#091428', color: '#f0e6d2' }}>
               {c.name} - {c.title}
             </option>
           ))}
         </select>
 
-        {/* Tarjeta del Campeón Seleccionado */}
-        {selectedChamp && (
+        {/* Galería Visual Táctil de Campeones (Estilo Cliente LoL) */}
+        <div>
+          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '8px', display: 'block' }}>
+            Toca cualquier campeón para seleccionarlo:
+          </span>
           <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '14px',
-            padding: '12px',
-            backgroundColor: 'rgba(9, 20, 40, 0.7)',
+            display: 'grid',
+            gridTemplateColumns: 'repeat(5, 1fr)',
+            gap: '8px',
+            maxHeight: '190px',
+            overflowY: 'auto',
+            padding: '6px',
+            backgroundColor: 'rgba(5, 12, 24, 0.8)',
             borderRadius: '10px',
-            border: '1px solid rgba(200, 170, 110, 0.25)',
+            border: '1px solid rgba(200, 170, 110, 0.2)',
           }}>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={selectedChamp.iconUrl}
-              alt={selectedChamp.name}
-              style={{
-                width: '56px',
-                height: '56px',
-                borderRadius: '8px',
-                border: '2px solid var(--hextech-gold)',
-                objectFit: 'cover',
-              }}
-            />
-            <div style={{ display: 'flex', flexDirection: 'column' }}>
-              <span style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--hextech-gold-bright)' }}>
-                {selectedChamp.name}
-              </span>
-              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'capitalize' }}>
-                {selectedChamp.title}
-              </span>
-              <span style={{ fontSize: '0.7rem', color: 'var(--hextech-blue)', marginTop: '2px' }}>
-                LCU ID: {selectedChamp.key}
-              </span>
-            </div>
+            {filteredChampions.slice(0, 30).map((c) => {
+              const isSelected = Number(c.key) === Number(selectedChamp.key);
+              return (
+                <div
+                  key={`thumb-${c.key}`}
+                  onClick={() => handleSelectChampion(c)}
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    cursor: 'pointer',
+                    padding: '4px',
+                    borderRadius: '8px',
+                    backgroundColor: isSelected ? 'rgba(200, 170, 110, 0.3)' : 'transparent',
+                    border: isSelected ? '2px solid var(--hextech-gold)' : '1px solid transparent',
+                    transition: 'all 0.15s ease',
+                  }}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={c.iconUrl}
+                    alt={c.name}
+                    style={{
+                      width: '42px',
+                      height: '42px',
+                      borderRadius: '6px',
+                      objectFit: 'cover',
+                      opacity: isSelected ? 1 : 0.8,
+                    }}
+                  />
+                  <span style={{
+                    fontSize: '0.62rem',
+                    textAlign: 'center',
+                    marginTop: '3px',
+                    color: isSelected ? 'var(--hextech-gold-bright)' : 'var(--text-muted)',
+                    fontWeight: isSelected ? 800 : 500,
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    maxWidth: '48px',
+                  }}>
+                    {c.name}
+                  </span>
+                </div>
+              );
+            })}
           </div>
-        )}
+        </div>
 
         {/* Botón Fijar Campeón */}
         <button
           onClick={handleLockChampion}
           disabled={isLocking || !selectedChamp || !gameState.online}
           style={{
-            marginTop: '4px',
+            marginTop: '6px',
             width: '100%',
             padding: '16px',
             borderRadius: '10px',
@@ -648,7 +755,7 @@ export default function HomePage() {
             ? 'Enviando Pick...'
             : !gameState.online
             ? 'PC Desconectada'
-            : `Fijar a ${selectedChamp ? selectedChamp.name : 'Campeón'}`}
+            : `Fijar a ${selectedChamp.name}`}
         </button>
 
         <p style={{
@@ -657,7 +764,7 @@ export default function HomePage() {
           textAlign: 'center',
           lineHeight: '1.4',
         }}>
-          Aplica el pick y automáticamente configura la primera página de runas y hechizos recomendados.
+          Al fijar a <strong>{selectedChamp.name}</strong>, el Agente Local aplicará automáticamente las runas y hechizos recomendados.
         </p>
       </section>
 

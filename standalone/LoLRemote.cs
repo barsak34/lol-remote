@@ -1344,33 +1344,19 @@ namespace LoLRemote
         {
             try
             {
-                using (var bmp = new Bitmap(32, 32))
-                using (var g = Graphics.FromImage(bmp))
-                {
-                    g.SmoothingMode = SmoothingMode.AntiAlias;
-                    g.Clear(Color.FromArgb(9, 20, 40));
-                    using (var goldPen = new Pen(Color.FromArgb(200, 170, 110), 2.5f))
-                    {
-                        g.DrawEllipse(goldPen, 3, 3, 25, 25);
-                    }
-                    using (var cyanPen = new Pen(Color.FromArgb(10, 200, 185), 1.5f))
-                    {
-                        g.DrawEllipse(cyanPen, 7, 7, 17, 17);
-                    }
-                    using (var font = new Font("Arial", 10f, FontStyle.Bold, GraphicsUnit.Pixel))
-                    using (var brush = new SolidBrush(Color.FromArgb(240, 230, 210)))
-                    using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
-                    {
-                        g.DrawString("LR", font, brush, new RectangleF(0, 0, 32, 32), sf);
-                    }
-                    IntPtr hIcon = bmp.GetHicon();
-                    return Icon.FromHandle(hIcon);
-                }
+                Icon exeIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+                if (exeIcon != null) return exeIcon;
             }
-            catch
+            catch { }
+
+            try
             {
-                return SystemIcons.Application;
+                string icoPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "standalone\\app.ico");
+                if (File.Exists(icoPath)) return new Icon(icoPath);
             }
+            catch { }
+
+            return SystemIcons.Application;
         }
     }
 

@@ -448,6 +448,36 @@ namespace LoLRemote
             }
         }
 
+        private static List<Dictionary<string, object>> ExtractAllActions(object actionsObj)
+        {
+            var result = new List<Dictionary<string, object>>();
+            if (actionsObj == null) return result;
+
+            var groups = actionsObj as System.Collections.IEnumerable;
+            if (groups == null) return result;
+
+            foreach (var group in groups)
+            {
+                var acts = group as System.Collections.IEnumerable;
+                if (acts == null) continue;
+
+                foreach (var a in acts)
+                {
+                    var idict = a as System.Collections.IDictionary;
+                    if (idict != null)
+                    {
+                        var dict = new Dictionary<string, object>();
+                        foreach (System.Collections.DictionaryEntry de in idict)
+                        {
+                            dict[de.Key.ToString()] = de.Value;
+                        }
+                        result.Add(dict);
+                    }
+                }
+            }
+            return result;
+        }
+
         private static async Task BroadcastGameState()
         {
             string phase = "None";
@@ -488,31 +518,17 @@ namespace LoLRemote
                     {
                         int localCellId = Convert.ToInt32(session["localPlayerCellId"]);
                         bool isMyTurn = false;
-                        if (session.ContainsKey("actions"))
+                        var actions = ExtractAllActions(session.ContainsKey("actions") ? session["actions"] : null);
+
+                        foreach (var act in actions)
                         {
-                            var actionGroups = session["actions"] as object[];
-                            if (actionGroups != null)
+                            if (Convert.ToInt32(act["actorCellId"]) == localCellId &&
+                                act.ContainsKey("type") && act["type"] != null && act["type"].ToString() == "pick" &&
+                                !Convert.ToBoolean(act["completed"]) &&
+                                act.ContainsKey("isInProgress") && Convert.ToBoolean(act["isInProgress"]))
                             {
-                                foreach (var group in actionGroups)
-                                {
-                                    var acts = group as object[];
-                                    if (acts != null)
-                                    {
-                                        foreach (var a in acts)
-                                        {
-                                            var actDict = a as Dictionary<string, object>;
-                                            if (actDict != null &&
-                                                Convert.ToInt32(actDict["actorCellId"]) == localCellId &&
-                                                actDict.ContainsKey("type") && actDict["type"] != null && actDict["type"].ToString() == "pick" &&
-                                                !Convert.ToBoolean(actDict["completed"]) &&
-                                                actDict.ContainsKey("isInProgress") && Convert.ToBoolean(actDict["isInProgress"]))
-                                            {
-                                                isMyTurn = true;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
+                                isMyTurn = true;
+                                break;
                             }
                         }
 
@@ -643,46 +659,46 @@ namespace LoLRemote
                 if (session == null) return;
 
                 int localCellId = Convert.ToInt32(session["localPlayerCellId"]);
-                int pickActionId = -1;
+                var actions = ExtractAllActions(session.ContainsKey("actions") ? session["actions"] : null);
 
-                if (session.ContainsKey("actions"))
+                int pickActionId = -1;
+                foreach (var act in actions)
                 {
-                    var actionGroups = session["actions"] as object[];
-                    if (actionGroups != null)
+                    if (Convert.ToInt32(act["actorCellId"]) == localCellId &&
+                        act.ContainsKey("type") && act["type"] != null && act["type"].ToString() == "pick" &&
+                        !Convert.ToBoolean(act["completed"]))
                     {
-                        foreach (var group in actionGroups)
+                        if (Convert.ToBoolean(act["isInProgress"]))
                         {
-                            var acts = group as object[];
-                            if (acts != null)
-                            {
-                                foreach (var a in acts)
-                                {
-                                    var actDict = a as Dictionary<string, object>;
-                                    if (actDict != null &&
-                                        Convert.ToInt32(actDict["actorCellId"]) == localCellId &&
-                                        actDict.ContainsKey("type") && actDict["type"] != null && actDict["type"].ToString() == "pick" &&
-                                        !Convert.ToBoolean(actDict["completed"]))
-                                    {
-                                        pickActionId = Convert.ToInt32(actDict["id"]);
-                                        break;
-                                    }
-                                }
-                            }
-                            if (pickActionId != -1) break;
+                            pickActionId = Convert.ToInt32(act["id"]);
+                            break;
+                        }
+                        else if (pickActionId == -1)
+                        {
+                            pickActionId = Convert.ToInt32(act["id"]);
                         }
                     }
                 }
 
                 int sc; string resText;
-                var hoverBody = Serializer.Serialize(new Dictionary<string, object> { { "championId", championId } });
+                var hoverBody = "{\"championId\":" + championId + "}";
                 if (pickActionId != -1)
                 {
-                    LcuTryRequest("PATCH", "/lol-champ-select/v1/session/actions/" + pickActionId, hoverBody, out sc, out resText);
+                    bool ok = LcuTryRequest("PATCH", "/lol-champ-select/v1/session/actions/" + pickActionId, hoverBody, out sc, out resText);
+                    if (!ok)
+                    {
+                        LcuTryRequest("PATCH", "/lol-lobby-team-builder/champ-select/v1/session/actions/" + pickActionId, hoverBody, out sc, out resText);
+                    }
                 }
                 LcuTryRequest("PATCH", "/lol-champ-select/v1/session/my-selection", hoverBody, out sc, out resText);
+
                 Log("[Hover] Preseleccionando a " + champName + " en el juego.", Color.FromArgb(160, 155, 140));
+                SendActionResult("HOVER_CHAMPION", true, "¡" + champName + " mostrado en tu pantalla!");
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Log("[Error Hover] " + ex.Message, Color.FromArgb(232, 64, 87));
+            }
         }
 
         private static void LockChampion(int championId, string champName)
@@ -700,66 +716,55 @@ namespace LoLRemote
                 }
 
                 int localCellId = Convert.ToInt32(session["localPlayerCellId"]);
+                var actions = ExtractAllActions(session.ContainsKey("actions") ? session["actions"] : null);
+
                 int activeActionId = -1;
                 int pendingActionId = -1;
 
-                if (session.ContainsKey("actions"))
+                foreach (var act in actions)
                 {
-                    var actionGroups = session["actions"] as object[];
-                    if (actionGroups != null)
+                    if (Convert.ToInt32(act["actorCellId"]) == localCellId &&
+                        act.ContainsKey("type") && act["type"] != null && act["type"].ToString() == "pick" &&
+                        !Convert.ToBoolean(act["completed"]))
                     {
-                        foreach (var group in actionGroups)
+                        int aId = Convert.ToInt32(act["id"]);
+                        bool inProg = Convert.ToBoolean(act["isInProgress"]);
+                        if (inProg)
                         {
-                            var acts = group as object[];
-                            if (acts != null)
-                            {
-                                foreach (var a in acts)
-                                {
-                                    var actDict = a as Dictionary<string, object>;
-                                    if (actDict != null &&
-                                        Convert.ToInt32(actDict["actorCellId"]) == localCellId &&
-                                        actDict.ContainsKey("type") && actDict["type"] != null && actDict["type"].ToString() == "pick" &&
-                                        !Convert.ToBoolean(actDict["completed"]))
-                                    {
-                                        int aId = Convert.ToInt32(actDict["id"]);
-                                        bool inProg = actDict.ContainsKey("isInProgress") && Convert.ToBoolean(actDict["isInProgress"]);
-                                        if (inProg)
-                                        {
-                                            activeActionId = aId;
-                                            break;
-                                        }
-                                        else if (pendingActionId == -1)
-                                        {
-                                            pendingActionId = aId;
-                                        }
-                                    }
-                                }
-                            }
-                            if (activeActionId != -1) break;
+                            activeActionId = aId;
+                            break;
+                        }
+                        else if (pendingActionId == -1)
+                        {
+                            pendingActionId = aId;
                         }
                     }
                 }
+
+                Log(string.Format("[LCU] Celda: {0} | Activa: {1} | Pendiente: {2} | Total Acciones: {3}",
+                    localCellId, activeActionId, pendingActionId, actions.Count), Color.FromArgb(160, 155, 140));
 
                 // Caso 1: Turno activo de selección (isInProgress == true)
                 if (activeActionId != -1)
                 {
                     int sc; string resText;
 
-                    // Hover
-                    var hoverBody = Serializer.Serialize(new Dictionary<string, object> { { "championId", championId } });
+                    // 1. Hover
+                    var hoverBody = "{\"championId\":" + championId + "}";
                     LcuTryRequest("PATCH", "/lol-champ-select/v1/session/actions/" + activeActionId, hoverBody, out sc, out resText);
 
-                    // Lock-in
-                    var lockBody = Serializer.Serialize(new Dictionary<string, object>
-                    {
-                        { "championId", championId },
-                        { "completed", true }
-                    });
+                    // 2. Lock-in con completed: true
+                    var lockBody = "{\"championId\":" + championId + ",\"completed\":true}";
                     bool locked = LcuTryRequest("PATCH", "/lol-champ-select/v1/session/actions/" + activeActionId, lockBody, out sc, out resText);
 
                     if (!locked)
                     {
-                        LcuTryRequest("POST", "/lol-champ-select/v1/session/actions/" + activeActionId + "/complete", "{}", out sc, out resText);
+                        locked = LcuTryRequest("POST", "/lol-champ-select/v1/session/actions/" + activeActionId + "/complete", "{}", out sc, out resText);
+                    }
+                    if (!locked)
+                    {
+                        LcuTryRequest("PATCH", "/lol-lobby-team-builder/champ-select/v1/session/actions/" + activeActionId, lockBody, out sc, out resText);
+                        LcuTryRequest("POST", "/lol-lobby-team-builder/champ-select/v1/session/actions/" + activeActionId + "/complete", "{}", out sc, out resText);
                     }
 
                     _pendingLockChampionId = 0;
@@ -772,11 +777,11 @@ namespace LoLRemote
                     return;
                 }
 
-                // Caso 2: En Draft pero esperando turno (preseleccionar y auto-lock)
+                // Caso 2: En Draft pero esperando turno (preseleccionar y auto-lock al iniciar turno)
                 if (pendingActionId != -1)
                 {
                     int sc; string resText;
-                    var hoverBody = Serializer.Serialize(new Dictionary<string, object> { { "championId", championId } });
+                    var hoverBody = "{\"championId\":" + championId + "}";
                     LcuTryRequest("PATCH", "/lol-champ-select/v1/session/actions/" + pendingActionId, hoverBody, out sc, out resText);
                     LcuTryRequest("PATCH", "/lol-champ-select/v1/session/my-selection", hoverBody, out sc, out resText);
 
@@ -793,7 +798,7 @@ namespace LoLRemote
                 // Caso 3: Modos especiales (Blind Pick, ARAM, partidas sin acciones draft)
                 {
                     int sc; string resText;
-                    var mySelBody = Serializer.Serialize(new Dictionary<string, object> { { "championId", championId } });
+                    var mySelBody = "{\"championId\":" + championId + "}";
                     bool selOk = LcuTryRequest("PATCH", "/lol-champ-select/v1/session/my-selection", mySelBody, out sc, out resText);
 
                     if (selOk)
@@ -1033,6 +1038,13 @@ namespace LoLRemote
         {
             string ts = DateTime.Now.ToString("HH:mm:ss");
             string full = string.Format("[{0}] {1}", ts, message);
+
+            try
+            {
+                string logFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "lol_remote_debug.log");
+                File.AppendAllText(logFile, full + "\r\n");
+            }
+            catch { }
 
             if (MainFormInstance != null && !MainFormInstance.IsDisposed)
             {

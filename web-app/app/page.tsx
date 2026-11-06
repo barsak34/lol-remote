@@ -281,6 +281,12 @@ export default function HomePage() {
 
   // Seleccionar y Preseleccionar (Hover) Campeón
   const handleSelectChampion = async (champ: Champion) => {
+    // Si ya está seleccionado y vuelven a tocarlo, fijar inmediatamente
+    if (selectedChampionId === champ.key) {
+      handleLockChampion();
+      return;
+    }
+
     setSelectedChampionId(champ.key);
     if (channelRef.current && channelStatus === 'CONNECTED' && gameState.online) {
       try {
@@ -657,19 +663,40 @@ export default function HomePage() {
               </div>
             </div>
 
-            <button
-              onClick={() => setSelectedChampionId(null)}
-              style={{
-                background: 'rgba(255, 255, 255, 0.08)',
-                color: 'var(--text-muted)',
-                borderRadius: '8px',
-                padding: '6px 10px',
-                fontSize: '0.7rem',
-                fontWeight: 600,
-              }}
-            >
-              Cambiar
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <button
+                onClick={handleLockChampion}
+                disabled={isLocking || !gameState.online}
+                style={{
+                  background: 'linear-gradient(135deg, #785a28 0%, #c89b3c 50%, #f0e6d2 100%)',
+                  color: '#091428',
+                  borderRadius: '8px',
+                  padding: '7px 14px',
+                  fontSize: '0.8rem',
+                  fontWeight: 800,
+                  border: 'none',
+                  cursor: 'pointer',
+                  boxShadow: '0 2px 8px rgba(200, 170, 110, 0.4)',
+                }}
+              >
+                {isLocking ? 'Fijando...' : '🔒 Fijar'}
+              </button>
+              <button
+                onClick={() => setSelectedChampionId(null)}
+                style={{
+                  background: 'rgba(255, 255, 255, 0.08)',
+                  color: 'var(--text-muted)',
+                  borderRadius: '8px',
+                  padding: '7px 10px',
+                  fontSize: '0.75rem',
+                  fontWeight: 600,
+                  border: 'none',
+                  cursor: 'pointer',
+                }}
+              >
+                ✕
+              </button>
+            </div>
           </div>
         ) : (
           /* Estado Vacío cuando no hay campeón seleccionado */

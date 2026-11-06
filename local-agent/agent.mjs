@@ -136,57 +136,119 @@ class LCUClient {
     }
   }
 
-  async lockChampion(championId) {
-    console.log(`[LCU] Iniciando fijación de campeón (ID: ${championId})...`);
+  async hoverChampion(championId) {
+    try {
+      const sessionRes = await this.request('GET', '/lol-champ-select/v1/session');
+      if (!sessionRes.ok) return;
+      const session = sessionRes.data;
+      const localCellId = session.localPlayerCellId;
+
+      let pickActionId = null;
+      if (session.actions) {
+        for (const group of session.actions) {
+          for (const action of group) {
+            if (action.actorCellId === localCellId && action.type === 'pick' && !action.completed) {
+              pickActionId = action.id;
+              break;
+            }
+          }
+          if (pickActionId !== null) break;
+        }
+      }
+
+      if (pickActionId !== null) {
+        await this.request('PATCH', `/lol-champ-select/v1/session/actions/${pickActionId}`, { championId });
+      }
+      await this.request('PATCH', '/lol-champ-select/v1/session/my-selection', { championId });
+    } catch {}
+  }
+
+  async lockChampion(championId, championName = '') {
+    console.log(`[LCU] Iniciando fijación de campeón: ${championName || championId}...`);
 
     // 1. Obtener sesión de selección de campeón
     const sessionRes = await this.request('GET', '/lol-champ-select/v1/session');
     if (!sessionRes.ok) {
       console.error('[LCU ERROR] No estás en selección de campeón o LCU respondió error:', sessionRes.data);
-      return { success: false, message: 'No estás en selección de campeón.' };
+      return { success: false, message: 'No estás en selección de campeón en LoL.' };
     }
 
     const session = sessionRes.data;
     const localCellId = session.localPlayerCellId;
     console.log(`[LCU] Tu celda local es: ${localCellId}`);
 
-    // 2. Buscar acción de 'pick' correspondiente
-    let targetActionId = null;
+    // 2. Buscar acción activa y acción pendiente
+    let activeActionId = null;
+    let pendingActionId = null;
+
     if (session.actions) {
       for (const group of session.actions) {
         for (const action of group) {
           if (action.actorCellId === localCellId && action.type === 'pick' && !action.completed) {
-            targetActionId = action.id;
-            break;
+            if (action.isInProgress) {
+              activeActionId = action.id;
+              break;
+            } else if (pendingActionId === null) {
+              pendingActionId = action.id;
+            }
           }
         }
-        if (targetActionId !== null) break;
+        if (activeActionId !== null) break;
       }
     }
 
-    if (targetActionId === null) {
-      console.error('[LCU ERROR] No se encontró una acción de selección activa para tu celda.');
-      return { success: false, message: 'No es tu turno de selección o ya fijaste campeón.' };
+    // Caso 1: Turno activo de selección
+    if (activeActionId !== null) {
+      console.log(`[LCU] Acción activa encontrada (ID: ${activeActionId}). Bloqueando campeón...`);
+
+      // Hover primero
+      await this.request('PATCH', `/lol-champ-select/v1/session/actions/${activeActionId}`, { championId });
+
+      // Lock-in completando la acción
+      const lockRes = await this.request('PATCH', `/lol-champ-select/v1/session/actions/${activeActionId}`, {
+        championId,
+        completed: true,
+      });
+
+      if (!lockRes.ok) {
+        // Fallback
+        await this.request('POST', `/lol-champ-select/v1/session/actions/${activeActionId}/complete`);
+      }
+
+      console.log(`>>> [LCU ÉXITO] ¡${championName || championId} fijado con éxito!`);
+      setTimeout(async () => {
+        await this.applyRunesAndSpells(championId);
+      }, 600);
+
+      return { success: true, message: `¡${championName || championId} fijado con éxito! Configurando runas...` };
     }
 
-    console.log(`[LCU] Acción encontrada (ID: ${targetActionId}). Asignando campeón ${championId}...`);
+    // Caso 2: En Draft pero esperando turno
+    if (pendingActionId !== null) {
+      console.log(`[LCU] Turno aún no activo. Preseleccionando (hover) para el equipo...`);
+      await this.request('PATCH', `/lol-champ-select/v1/session/actions/${pendingActionId}`, { championId });
+      await this.request('PATCH', '/lol-champ-select/v1/session/my-selection', { championId });
 
-    // 3. PATCH /lol-champ-select/v1/session/actions/{actionId}
-    const patchRes = await this.request('PATCH', `/lol-champ-select/v1/session/actions/${targetActionId}`, {
-      championId,
-    });
-    console.log(`[LCU] Asignación de campeón: ${patchRes.status}`);
+      setTimeout(async () => {
+        await this.applyRunesAndSpells(championId);
+      }, 600);
 
-    // 4. POST /lol-champ-select/v1/session/actions/{actionId}/complete
-    const completeRes = await this.request('POST', `/lol-champ-select/v1/session/actions/${targetActionId}/complete`);
-    console.log(`[LCU] Completar selección (Lock-In): ${completeRes.status}`);
+      return {
+        success: true,
+        message: `¡${championName || championId} preseleccionado! Se fijará automáticamente al comenzar tu turno.`,
+      };
+    }
 
-    // 5. Aplicar runas y hechizos recomendados
-    setTimeout(async () => {
-      await this.applyRunesAndSpells(championId);
-    }, 600);
+    // Caso 3: Modos alternativos (Blind pick / ARAM)
+    const mySelRes = await this.request('PATCH', '/lol-champ-select/v1/session/my-selection', { championId });
+    if (mySelRes.ok) {
+      setTimeout(async () => {
+        await this.applyRunesAndSpells(championId);
+      }, 600);
+      return { success: true, message: `¡${championName || championId} seleccionado con éxito!` };
+    }
 
-    return { success: true, message: `¡Campeón (ID: ${championId}) fijado! Aplicando runas recomendadas...` };
+    return { success: false, message: 'No es tu turno de selección o ya fijaste campeón.' };
   }
 
   async applyRunesAndSpells(championId) {

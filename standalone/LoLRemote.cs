@@ -30,6 +30,8 @@ namespace LoLRemote
         private static ClientWebSocket _ws;
         private static readonly JavaScriptSerializer Serializer = new JavaScriptSerializer();
         private static Dictionary<string, object> _cachedSummoner = null;
+        private static int _pendingLockChampionId = 0;
+        private static string _pendingLockChampionName = "";
 
         static void Main(string[] args)
         {
@@ -463,9 +465,27 @@ namespace LoLRemote
                             { "isMyTurn", isMyTurn },
                             { "hasSession", true }
                         };
+
+                        // Auto-lock si el usuario seleccionó un campeón antes de que fuera su turno
+                        if (isMyTurn && _pendingLockChampionId > 0)
+                        {
+                            int cid = _pendingLockChampionId;
+                            string cname = _pendingLockChampionName;
+                            _pendingLockChampionId = 0;
+                            _pendingLockChampionName = "";
+                            Console.ForegroundColor = ConsoleColor.Yellow;
+                            Console.WriteLine("\n[Auto-Lock] ¡Llegó tu turno! Fijando automáticamente a " + cname + "...");
+                            Console.ResetColor();
+                            Task.Run(() => LockChampion(cid, cname));
+                        }
                     }
                 }
                 catch { }
+            }
+            else if (phase != "None")
+            {
+                _pendingLockChampionId = 0;
+                _pendingLockChampionName = "";
             }
 
             var broadcastPayload = new Dictionary<string, object>
@@ -526,7 +546,13 @@ namespace LoLRemote
                             Console.ForegroundColor = ConsoleColor.Yellow;
                             Console.WriteLine("\n[Órden Recibida] FIJAR CAMPEÓN: " + name + " (ID: " + championId + ")...");
                             Console.ResetColor();
-                            LockChampion(championId);
+                            LockChampion(championId, name);
+                        }
+                        else if (subEvent == "HOVER_CHAMPION" && data != null)
+                        {
+                            int championId = Convert.ToInt32(data["championId"]);
+                            string name = data.ContainsKey("championName") && data["championName"] != null ? data["championName"].ToString() : championId.ToString();
+                            HoverChampion(championId, name);
                         }
                     }
                 }
@@ -538,11 +564,20 @@ namespace LoLRemote
         {
             try
             {
-                var res = LcuRequest("POST", "/lol-matchmaking/v1/ready-check/accept", null);
-                Console.ForegroundColor = ConsoleColor.Green;
-                Console.WriteLine(">>> [Éxito] ¡Partida Aceptada en League of Legends!");
-                Console.ResetColor();
-                SendActionResult("ACCEPT_MATCH", true, "¡Partida aceptada exitosamente en LoL!");
+                int sc; string resp;
+                bool ok = LcuTryRequest("POST", "/lol-matchmaking/v1/ready-check/accept", null, out sc, out resp);
+                if (ok)
+                {
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.WriteLine(">>> [Éxito] ¡Partida Aceptada en League of Legends!");
+                    Console.ResetColor();
+                    SendActionResult("ACCEPT_MATCH", true, "¡Partida aceptada exitosamente en LoL!");
+                }
+                else
+                {
+                    Console.WriteLine("[Aviso] No se pudo aceptar (status " + sc + "): " + resp);
+                    SendActionResult("ACCEPT_MATCH", false, "No hay partida activa para aceptar en este momento.");
+                }
             }
             catch (Exception ex)
             {
@@ -551,19 +586,15 @@ namespace LoLRemote
             }
         }
 
-        private static void LockChampion(int championId)
+        private static void HoverChampion(int championId, string champName)
         {
             try
             {
                 var session = LcuGet("/lol-champ-select/v1/session");
-                if (session == null)
-                {
-                    SendActionResult("LOCK_CHAMPION", false, "No estás en selección de campeón.");
-                    return;
-                }
+                if (session == null) return;
 
                 int localCellId = Convert.ToInt32(session["localPlayerCellId"]);
-                int targetActionId = -1;
+                int pickActionId = -1;
 
                 if (session.ContainsKey("actions"))
                 {
@@ -583,49 +614,211 @@ namespace LoLRemote
                                         actDict.ContainsKey("type") && actDict["type"] != null && actDict["type"].ToString() == "pick" &&
                                         !Convert.ToBoolean(actDict["completed"]))
                                     {
-                                        targetActionId = Convert.ToInt32(actDict["id"]);
+                                        pickActionId = Convert.ToInt32(actDict["id"]);
                                         break;
                                     }
                                 }
                             }
-                            if (targetActionId != -1) break;
+                            if (pickActionId != -1) break;
                         }
                     }
                 }
 
-                if (targetActionId == -1)
+                int sc; string resText;
+                var hoverBody = Serializer.Serialize(new Dictionary<string, object> { { "championId", championId } });
+                if (pickActionId != -1)
                 {
-                    SendActionResult("LOCK_CHAMPION", false, "No es tu turno de selección o ya fijaste campeón.");
+                    LcuTryRequest("PATCH", "/lol-champ-select/v1/session/actions/" + pickActionId, hoverBody, out sc, out resText);
+                }
+                LcuTryRequest("PATCH", "/lol-champ-select/v1/session/my-selection", hoverBody, out sc, out resText);
+                Console.WriteLine("[Hover] Mostrando a " + champName + " en el cliente...");
+            }
+            catch { }
+        }
+
+        private static void LockChampion(int championId, string champName)
+        {
+            try
+            {
+                var session = LcuGet("/lol-champ-select/v1/session");
+                if (session == null)
+                {
+                    string phase = LcuGetString("/lol-gameflow/v1/gameflow-phase");
+                    if (!string.IsNullOrEmpty(phase)) phase = phase.Trim('"');
+                    Console.WriteLine("[Aviso] Intento de fijar campeón pero no estás en ChampSelect (fase actual: " + phase + ")");
+                    SendActionResult("LOCK_CHAMPION", false, "No estás en la selección de campeón en LoL.");
                     return;
                 }
 
-                LcuRequest("PATCH", "/lol-champ-select/v1/session/actions/" + targetActionId, 
-                    Serializer.Serialize(new Dictionary<string, object> { { "championId", championId } }));
+                int localCellId = Convert.ToInt32(session["localPlayerCellId"]);
+                int activeActionId = -1;
+                int pendingActionId = -1;
 
-                LcuRequest("POST", "/lol-champ-select/v1/session/actions/" + targetActionId + "/complete", "{}");
-
-                Console.ForegroundColor = ConsoleColor.Green;
-                Console.WriteLine(">>> [Éxito] ¡Campeón fijado! Aplicando runas y hechizos recomendados...");
-                Console.ResetColor();
-
-                SendActionResult("LOCK_CHAMPION", true, "¡Campeón fijado! Aplicando runas recomendadas...");
-
-                Task.Run(async () =>
+                if (session.ContainsKey("actions"))
                 {
-                    await Task.Delay(600);
-                    try
+                    var actionGroups = session["actions"] as object[];
+                    if (actionGroups != null)
                     {
-                        var recPages = LcuGetList("/lol-perks/v1/recommended-pages?championId=" + championId);
-                        if (recPages != null && recPages.Count > 0)
+                        foreach (var group in actionGroups)
                         {
-                            LcuRequest("POST", "/lol-perks/v1/currentpage", Serializer.Serialize(recPages[0]));
+                            var acts = group as object[];
+                            if (acts != null)
+                            {
+                                foreach (var a in acts)
+                                {
+                                    var actDict = a as Dictionary<string, object>;
+                                    if (actDict != null &&
+                                        Convert.ToInt32(actDict["actorCellId"]) == localCellId &&
+                                        actDict.ContainsKey("type") && actDict["type"] != null && actDict["type"].ToString() == "pick" &&
+                                        !Convert.ToBoolean(actDict["completed"]))
+                                    {
+                                        int aId = Convert.ToInt32(actDict["id"]);
+                                        bool inProg = actDict.ContainsKey("isInProgress") && Convert.ToBoolean(actDict["isInProgress"]);
+                                        if (inProg)
+                                        {
+                                            activeActionId = aId;
+                                            break;
+                                        }
+                                        else if (pendingActionId == -1)
+                                        {
+                                            pendingActionId = aId;
+                                        }
+                                    }
+                                }
+                            }
+                            if (activeActionId != -1) break;
                         }
+                    }
+                }
 
-                        var grid = LcuGetList("/lol-champ-select/v1/grid-recommendations");
-                        if (grid != null && grid.Count > 0)
+                Console.WriteLine("[LCU] Celda local: " + localCellId + " | Acción Activa: " + activeActionId + " | Acción Pendiente: " + pendingActionId);
+
+                // Caso 1: Es tu turno activo de selección (isInProgress == true)
+                if (activeActionId != -1)
+                {
+                    int sc;
+                    string resText;
+
+                    // 1. Hover/preseleccionar
+                    var hoverBody = Serializer.Serialize(new Dictionary<string, object> { { "championId", championId } });
+                    LcuTryRequest("PATCH", "/lol-champ-select/v1/session/actions/" + activeActionId, hoverBody, out sc, out resText);
+
+                    // 2. Lock-in directo completando la acción (estándar LCU)
+                    var lockBody = Serializer.Serialize(new Dictionary<string, object>
+                    {
+                        { "championId", championId },
+                        { "completed", true }
+                    });
+                    bool locked = LcuTryRequest("PATCH", "/lol-champ-select/v1/session/actions/" + activeActionId, lockBody, out sc, out resText);
+
+                    if (!locked)
+                    {
+                        // Fallback adicional por compatibilidad con clientes antiguos
+                        LcuTryRequest("POST", "/lol-champ-select/v1/session/actions/" + activeActionId + "/complete", "{}", out sc, out resText);
+                    }
+
+                    _pendingLockChampionId = 0;
+                    _pendingLockChampionName = "";
+
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.WriteLine(">>> [ÉXITO] ¡" + champName + " FIJADO EN TU PARTIDA!");
+                    Console.ResetColor();
+
+                    SendActionResult("LOCK_CHAMPION", true, "¡" + champName + " fijado con éxito! Configurando runas...");
+
+                    ApplyRunesAndSpellsAsync(championId);
+                    return;
+                }
+
+                // Caso 2: Estás en Draft pero NO es tu turno todavía (fase de bloqueos o esperando turno)
+                if (pendingActionId != -1)
+                {
+                    int sc;
+                    string resText;
+
+                    // Preseleccionar (hover) para que tu equipo lo vea
+                    var hoverBody = Serializer.Serialize(new Dictionary<string, object> { { "championId", championId } });
+                    LcuTryRequest("PATCH", "/lol-champ-select/v1/session/actions/" + pendingActionId, hoverBody, out sc, out resText);
+                    LcuTryRequest("PATCH", "/lol-champ-select/v1/session/my-selection", hoverBody, out sc, out resText);
+
+                    // Guardar para autobloqueo cuando comience tu turno
+                    _pendingLockChampionId = championId;
+                    _pendingLockChampionName = champName;
+
+                    Console.ForegroundColor = ConsoleColor.Cyan;
+                    Console.WriteLine(">>> [Preselección] " + champName + " preseleccionado. Se fijará automáticamente en cuanto sea tu turno.");
+                    Console.ResetColor();
+
+                    SendActionResult("LOCK_CHAMPION", true, "¡" + champName + " preseleccionado! Se fijará automáticamente al comenzar tu turno.");
+
+                    ApplyRunesAndSpellsAsync(championId);
+                    return;
+                }
+
+                // Caso 3: Modos especiales (Blind Pick, ARAM, partidas sin acciones draft)
+                {
+                    int sc;
+                    string resText;
+                    var mySelBody = Serializer.Serialize(new Dictionary<string, object> { { "championId", championId } });
+                    bool selOk = LcuTryRequest("PATCH", "/lol-champ-select/v1/session/my-selection", mySelBody, out sc, out resText);
+
+                    if (selOk)
+                    {
+                        Console.ForegroundColor = ConsoleColor.Green;
+                        Console.WriteLine(">>> [ÉXITO] Campeón seleccionado en my-selection.");
+                        Console.ResetColor();
+                        SendActionResult("LOCK_CHAMPION", true, "¡" + champName + " seleccionado con éxito!");
+                        ApplyRunesAndSpellsAsync(championId);
+                    }
+                    else
+                    {
+                        Console.WriteLine("[Aviso] No se encontró turno de selección ni acción para fijar.");
+                        SendActionResult("LOCK_CHAMPION", false, "No es tu turno de selección o ya tienes tu campeón fijado.");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("[Error LockChampion] " + ex.Message);
+                SendActionResult("LOCK_CHAMPION", false, "Error en el cliente de LoL: " + ex.Message);
+            }
+        }
+
+        private static void ApplyRunesAndSpellsAsync(int championId)
+        {
+            Task.Run(async () =>
+            {
+                await Task.Delay(600);
+                try
+                {
+                    // 1. Runas recomendadas
+                    var recPages = LcuGetList("/lol-perks/v1/recommended-pages?championId=" + championId);
+                    bool runeOk = false;
+                    if (recPages != null && recPages.Count > 0)
+                    {
+                        int sc; string resText;
+                        runeOk = LcuTryRequest("POST", "/lol-perks/v1/currentpage", Serializer.Serialize(recPages[0]), out sc, out resText);
+                        if (runeOk) Console.WriteLine("[✓] Página de runas recomendadas aplicada.");
+                    }
+
+                    // 2. Hechizos y Runas de Champ Select Grid
+                    var grid = LcuGetList("/lol-champ-select/v1/grid-recommendations");
+                    if (grid != null && grid.Count > 0)
+                    {
+                        var first = grid[0] as Dictionary<string, object>;
+                        if (first != null)
                         {
-                            var first = grid[0] as Dictionary<string, object>;
-                            if (first != null && first.ContainsKey("recommendedSpells"))
+                            if (!runeOk && first.ContainsKey("recommendedPerkPages"))
+                            {
+                                var perkPages = first["recommendedPerkPages"] as object[];
+                                if (perkPages != null && perkPages.Length > 0)
+                                {
+                                    int sc; string resText;
+                                    LcuTryRequest("POST", "/lol-perks/v1/currentpage", Serializer.Serialize(perkPages[0]), out sc, out resText);
+                                }
+                            }
+
+                            if (first.ContainsKey("recommendedSpells"))
                             {
                                 var spells = first["recommendedSpells"] as object[];
                                 if (spells != null && spells.Length > 0)
@@ -633,24 +826,25 @@ namespace LoLRemote
                                     var sDict = spells[0] as Dictionary<string, object>;
                                     if (sDict != null)
                                     {
-                                        LcuRequest("PATCH", "/lol-champ-select/v1/session/my-selection",
+                                        int sc; string resText;
+                                        LcuTryRequest("PATCH", "/lol-champ-select/v1/session/my-selection",
                                             Serializer.Serialize(new Dictionary<string, object>
                                             {
                                                 { "spell1Id", sDict["spell1Id"] },
                                                 { "spell2Id", sDict["spell2Id"] }
-                                            }));
+                                            }), out sc, out resText);
+                                        Console.WriteLine("[✓] Hechizos recomendados asignados (D/F).");
                                     }
                                 }
                             }
                         }
                     }
-                    catch { }
-                });
-            }
-            catch (Exception ex)
-            {
-                SendActionResult("LOCK_CHAMPION", false, "Error: " + ex.Message);
-            }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("[Aviso Runas] " + ex.Message);
+                }
+            });
         }
 
         private static void SendActionResult(string action, bool success, string message)
@@ -692,13 +886,32 @@ namespace LoLRemote
         private static Dictionary<string, object> LcuGet(string endpoint)
         {
             string json = LcuRequest("GET", endpoint, null);
-            return Serializer.Deserialize<Dictionary<string, object>>(json);
+            if (string.IsNullOrEmpty(json)) return null;
+            try
+            {
+                return Serializer.Deserialize<Dictionary<string, object>>(json);
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private static List<object> LcuGetList(string endpoint)
         {
             string json = LcuRequest("GET", endpoint, null);
-            return Serializer.Deserialize<List<object>>(json);
+            if (string.IsNullOrEmpty(json)) return null;
+            try
+            {
+                var arr = Serializer.Deserialize<object[]>(json);
+                if (arr != null) return new List<object>(arr);
+                var list = Serializer.Deserialize<List<object>>(json);
+                return list;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private static string LcuGetString(string endpoint)
@@ -708,27 +921,79 @@ namespace LoLRemote
 
         private static string LcuRequest(string method, string endpoint, string body)
         {
-            string url = string.Format("https://127.0.0.1:{0}{1}", _lcuPort, endpoint);
-            var req = (HttpWebRequest)WebRequest.Create(url);
-            req.Method = method;
-            req.Headers["Authorization"] = _authHeader;
-            req.Accept = "application/json";
+            int code;
+            string resp;
+            LcuTryRequest(method, endpoint, body, out code, out resp);
+            return resp;
+        }
 
-            if (body != null)
+        private static bool LcuTryRequest(string method, string endpoint, string body, out int statusCode, out string responseText)
+        {
+            statusCode = 0;
+            responseText = "";
+            try
             {
-                req.ContentType = "application/json";
-                byte[] bytes = Encoding.UTF8.GetBytes(body);
-                req.ContentLength = bytes.Length;
-                using (var stream = req.GetRequestStream())
+                string url = string.Format("https://127.0.0.1:{0}{1}", _lcuPort, endpoint);
+                var req = (HttpWebRequest)WebRequest.Create(url);
+                req.Method = method;
+                req.Headers["Authorization"] = _authHeader;
+                req.Accept = "application/json";
+                req.Timeout = 6000;
+
+                if (body != null)
                 {
-                    stream.Write(bytes, 0, bytes.Length);
+                    req.ContentType = "application/json";
+                    byte[] bytes = Encoding.UTF8.GetBytes(body);
+                    req.ContentLength = bytes.Length;
+                    using (var stream = req.GetRequestStream())
+                    {
+                        stream.Write(bytes, 0, bytes.Length);
+                    }
+                }
+
+                using (var resp = (HttpWebResponse)req.GetResponse())
+                {
+                    statusCode = (int)resp.StatusCode;
+                    using (var stream = resp.GetResponseStream())
+                    {
+                        if (stream != null)
+                        {
+                            using (var sr = new StreamReader(stream))
+                            {
+                                responseText = sr.ReadToEnd();
+                            }
+                        }
+                    }
+                    return statusCode >= 200 && statusCode < 300;
                 }
             }
-
-            using (var resp = (HttpWebResponse)req.GetResponse())
-            using (var sr = new StreamReader(resp.GetResponseStream()))
+            catch (WebException wex)
             {
-                return sr.ReadToEnd();
+                var errResp = wex.Response as HttpWebResponse;
+                if (errResp != null)
+                {
+                    statusCode = (int)errResp.StatusCode;
+                    try
+                    {
+                        using (var stream = errResp.GetResponseStream())
+                        {
+                            if (stream != null)
+                            {
+                                using (var sr = new StreamReader(stream))
+                                {
+                                    responseText = sr.ReadToEnd();
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+                return false;
+            }
+            catch (Exception ex)
+            {
+                responseText = ex.Message;
+                return false;
             }
         }
     }

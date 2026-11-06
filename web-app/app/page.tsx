@@ -232,6 +232,24 @@ export default function HomePage() {
     }
   };
 
+  // Seleccionar y Preseleccionar (Hover) Campeón
+  const handleSelectChampion = async (champ: Champion) => {
+    setSelectedChampionId(champ.key);
+    if (channelRef.current && channelStatus === 'CONNECTED' && gameState.online) {
+      try {
+        await channelRef.current.send({
+          type: 'broadcast',
+          event: 'HOVER_CHAMPION',
+          payload: {
+            championId: champ.key,
+            championName: champ.name,
+            timestamp: Date.now(),
+          },
+        });
+      } catch {}
+    }
+  };
+
   // Enviar orden de Fijar Campeón
   const handleLockChampion = async () => {
     if (!selectedChamp) return;
@@ -655,7 +673,7 @@ export default function HomePage() {
             return (
               <div
                 key={`champ-${c.key}`}
-                onClick={() => setSelectedChampionId(c.key)}
+                onClick={() => handleSelectChampion(c)}
                 style={{
                   display: 'flex',
                   flexDirection: 'column',

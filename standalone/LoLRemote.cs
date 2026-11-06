@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
 using System.Net;
 using System.Net.Security;
@@ -12,12 +14,13 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Web;
 using System.Web.Script.Serialization;
+using System.Windows.Forms;
 
 namespace LoLRemote
 {
     class Program
     {
-        // Credenciales de Supabase embebidas (tu amigo no toca ningún archivo de configuración)
+        // Credenciales de Supabase embebidas
         private const string SupabaseUrl = "https://myfehiysehyubgtlvhew.supabase.co";
         private const string SupabaseKey = "sb_publishable_IKuShZGGK5fz-SRXw6QhBg_Hmwk-KAE";
 
@@ -26,118 +29,162 @@ namespace LoLRemote
         private static string _authHeader;
         private static string _roomCode = "";
         private static string _channelTopic = "";
+        private static string _summonerName = "Invocador";
 
         private static ClientWebSocket _ws;
         private static readonly JavaScriptSerializer Serializer = new JavaScriptSerializer();
         private static Dictionary<string, object> _cachedSummoner = null;
         private static int _pendingLockChampionId = 0;
         private static string _pendingLockChampionName = "";
+        private static bool _isConnected = false;
+        private static string _lastGamePhase = "None";
 
+        public static MainForm MainFormInstance;
+        private static Mutex _singleInstanceMutex;
+
+        [STAThread]
         static void Main(string[] args)
         {
-            Console.Title = "LoL Remote - Agente Windows";
-            Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine("========================================================================");
-            Console.WriteLine("                     🎮 LoL Remote - Windows Agent                     ");
-            Console.WriteLine("========================================================================");
-            Console.ResetColor();
+            // Evitar múltiples instancias del programa ejecutándose al mismo tiempo
+            bool createdNew;
+            _singleInstanceMutex = new Mutex(true, "LoLRemote_SingleInstance_Mutex_34", out createdNew);
+            if (!createdNew)
+            {
+                MessageBox.Show("LoL Remote ya se está ejecutando en segundo plano en tu PC.\nRevisa los iconos ocultos al lado del reloj de Windows.",
+                    "LoL Remote ya está abierto", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
 
             // Ignorar certificados SSL autofirmados de Riot LCU
-            ServicePointManager.ServerCertificateValidationCallback = 
+            ServicePointManager.ServerCertificateValidationCallback =
                 (sender, certificate, chain, sslPolicyErrors) => true;
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
 
-            // 1. Detectar League of Legends
-            Console.WriteLine("\n[1/3] Buscando cliente de League of Legends en tu PC...");
-            LockfileInfo lockfile = WaitForLockfile();
-            _lcuPort = lockfile.Port;
-            _lcuPassword = lockfile.Password;
-            _authHeader = "Basic " + Convert.ToBase64String(Encoding.ASCII.GetBytes("riot:" + _lcuPassword));
+            MainFormInstance = new MainForm();
 
-            Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine("[✓] League of Legends detectado con éxito!");
-            Console.ResetColor();
+            // Iniciar tarea en segundo plano para conexión de LoL y Supabase
+            Task.Run(() => BackgroundWorkerLoop(args));
 
-            // 2. Obtener datos del Invocador y PUUID único
-            string summonerName = "Invocador";
-            string summonerPuuid = "";
-            try
+            Application.Run(MainFormInstance);
+
+            if (_singleInstanceMutex != null)
             {
-                var sumRes = LcuGet("/lol-summoner/v1/current-summoner");
-                if (sumRes != null)
-                {
-                    _cachedSummoner = sumRes;
-                    var name = sumRes.ContainsKey("gameName") && sumRes["gameName"] != null
-                        ? sumRes["gameName"].ToString()
-                        : (sumRes.ContainsKey("displayName") && sumRes["displayName"] != null ? sumRes["displayName"].ToString() : "Invocador");
-                    var tag = sumRes.ContainsKey("tagLine") && sumRes["tagLine"] != null ? sumRes["tagLine"].ToString() : "LAS";
-                    var level = sumRes.ContainsKey("summonerLevel") && sumRes["summonerLevel"] != null ? sumRes["summonerLevel"].ToString() : "?";
-                    summonerName = name;
+                _singleInstanceMutex.ReleaseMutex();
+                _singleInstanceMutex = null;
+            }
+        }
 
-                    if (sumRes.ContainsKey("puuid") && sumRes["puuid"] != null)
+        private static async Task BackgroundWorkerLoop(string[] args)
+        {
+            Log("🎮 Iniciando LoL Remote Windows Companion...", Color.FromArgb(10, 200, 185));
+            Log("Buscando cliente de League of Legends en tu PC...", Color.FromArgb(200, 170, 110));
+
+            while (true)
+            {
+                try
+                {
+                    LockfileInfo lockfile = WaitForLockfile();
+                    _lcuPort = lockfile.Port;
+                    _lcuPassword = lockfile.Password;
+                    _authHeader = "Basic " + Convert.ToBase64String(Encoding.ASCII.GetBytes("riot:" + _lcuPassword));
+
+                    Log("✓ League of Legends detectado con éxito!", Color.FromArgb(37, 187, 132));
+
+                    // Obtener Invocador y PUUID
+                    string summonerPuuid = "";
+                    try
                     {
-                        summonerPuuid = sumRes["puuid"].ToString();
+                        var sumRes = LcuGet("/lol-summoner/v1/current-summoner");
+                        if (sumRes != null)
+                        {
+                            _cachedSummoner = sumRes;
+                            var name = sumRes.ContainsKey("gameName") && sumRes["gameName"] != null
+                                ? sumRes["gameName"].ToString()
+                                : (sumRes.ContainsKey("displayName") && sumRes["displayName"] != null ? sumRes["displayName"].ToString() : "Invocador");
+                            var tag = sumRes.ContainsKey("tagLine") && sumRes["tagLine"] != null ? sumRes["tagLine"].ToString() : "LAS";
+                            var level = sumRes.ContainsKey("summonerLevel") && sumRes["summonerLevel"] != null ? sumRes["summonerLevel"].ToString() : "?";
+                            _summonerName = name + "#" + tag;
+
+                            if (sumRes.ContainsKey("puuid") && sumRes["puuid"] != null)
+                            {
+                                summonerPuuid = sumRes["puuid"].ToString();
+                            }
+
+                            Log("Jugador: " + _summonerName + " (Nivel " + level + ")", Color.FromArgb(240, 230, 210));
+                        }
+                    }
+                    catch { }
+
+                    // Token Único por Cuenta
+                    if (args != null && args.Length > 0 && !string.IsNullOrEmpty(args[0]))
+                    {
+                        _roomCode = CleanRoomCode(args[0]);
+                    }
+                    else if (!string.IsNullOrEmpty(summonerPuuid))
+                    {
+                        _roomCode = summonerPuuid.Replace("-", "").Substring(0, 10).ToLower();
+                    }
+                    else
+                    {
+                        _roomCode = CleanRoomCode(_summonerName);
+                        if (string.IsNullOrEmpty(_roomCode)) _roomCode = "user" + new Random().Next(1000, 9999);
                     }
 
-                    Console.ForegroundColor = ConsoleColor.Yellow;
-                    Console.WriteLine("    Jugador: " + name + "#" + tag + " (Nivel " + level + ")");
-                    Console.ResetColor();
+                    _channelTopic = "realtime:lol-commands-" + _roomCode;
+
+                    string webUrl = "https://lol-remote-tau.vercel.app";
+                    string pairLink = string.Format("{0}/?pair={1}", webUrl.TrimEnd('/'), _roomCode);
+
+                    if (MainFormInstance != null)
+                    {
+                        MainFormInstance.UpdateConnectionInfo(_summonerName, _roomCode, pairLink);
+                    }
+
+                    // Comprobar si ya fue emparejado anteriormente
+                    CheckSmartPairingLaunch(_summonerName, _roomCode, pairLink);
+
+                    // Conectar a Supabase y escuchar comandos
+                    await ConnectAndListenWebSocket();
+                }
+                catch (Exception ex)
+                {
+                    Log("Aviso de conexión: " + ex.Message + ". Reintentando en 4s...", Color.FromArgb(232, 64, 87));
+                }
+
+                await Task.Delay(4000);
+            }
+        }
+
+        private static void CheckSmartPairingLaunch(string summoner, string token, string pairUrl)
+        {
+            try
+            {
+                string markerPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".lol_remote_paired_" + token);
+                if (!File.Exists(markerPath))
+                {
+                    // Primera vez que se abre con esta cuenta: Mostrar QR automáticamente
+                    Log("Primera vez detectada: Abriendo Código QR para vinculación inicial con tu celular...", Color.FromArgb(10, 200, 185));
+                    File.WriteAllText(markerPath, DateTime.UtcNow.ToString("o"));
+                    OpenPairingQrWindow(summoner, token, pairUrl);
+                }
+                else
+                {
+                    // Ya emparejado anteriormente: No abrir molestas pestañas en el navegador
+                    Log("✓ PC ya vinculada previamente con el token: " + token + ". Listo para recibir órdenes sin necesidad de reescanear.", Color.FromArgb(37, 187, 132));
+                    if (MainFormInstance != null)
+                    {
+                        MainFormInstance.ShowTrayBalloon("LoL Remote Conectado",
+                            "Listo para recibir órdenes de " + summoner + " desde tu celular. El programa sigue activo en segundo plano.", ToolTipIcon.Info);
+                    }
                 }
             }
             catch { }
-
-            // 3. Generar Token Criptográfico Único e Inconfundible por Cuenta
-            if (args.Length > 0 && !string.IsNullOrEmpty(args[0]))
-            {
-                _roomCode = CleanRoomCode(args[0]);
-            }
-            else if (!string.IsNullOrEmpty(summonerPuuid))
-            {
-                // Usar los primeros 10 caracteres del PUUID único de Riot (ej: 5558c81233)
-                _roomCode = summonerPuuid.Replace("-", "").Substring(0, 10).ToLower();
-            }
-            else
-            {
-                _roomCode = CleanRoomCode(summonerName);
-                if (string.IsNullOrEmpty(_roomCode)) _roomCode = "user" + new Random().Next(1000, 9999);
-            }
-
-            _channelTopic = "realtime:lol-commands-" + _roomCode;
-
-            // 4. Obtener URL de Vercel (configurable en web-url.txt si se desea)
-            string webUrl = "https://lol-remote-tau.vercel.app";
-            try
-            {
-                string urlFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "web-url.txt");
-                File.WriteAllText(urlFile, webUrl);
-            }
-            catch { }
-
-            string pairLink = string.Format("{0}/?pair={1}", webUrl.TrimEnd('/'), _roomCode);
-
-            // 5. Generar y abrir pantalla visual de vinculación con Código QR
-            OpenPairingQrWindow(summonerName, _roomCode, pairLink);
-
-            // 6. Banner en Consola
-            Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine("\n========================================================================");
-            Console.WriteLine("                 📲 VINCULACIÓN AUTOMÁTICA CON TU CELULAR              ");
-            Console.WriteLine("========================================================================");
-            Console.ResetColor();
-            Console.WriteLine("[✓] Se ha abierto tu navegador con el Código QR de vinculación.");
-            Console.WriteLine("\n👉 Apunta la cámara de tu celular al Código QR de la pantalla.");
-            Console.WriteLine("   (El celular guardará este PC para siempre y nadie más tendrá acceso)\n");
-            Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine("🔑 O ingresa este PIN en la app web:   " + _roomCode);
-            Console.ResetColor();
-            Console.WriteLine("🌐 Enlace directo:                     " + pairLink);
-            Console.WriteLine("========================================================================\n");
-
-            // 7. Iniciar conexión Supabase y bucle de escucha
-            Task.Run(() => ConnectAndListenWebSocket()).Wait();
         }
 
-        private static void OpenPairingQrWindow(string summoner, string token, string pairUrl)
+        public static void OpenPairingQrWindow(string summoner, string token, string pairUrl)
         {
             try
             {
@@ -251,8 +298,7 @@ namespace LoLRemote
         private static string CleanRoomCode(string input)
         {
             if (string.IsNullOrEmpty(input)) return "";
-            string cleaned = Regex.Replace(input, @"[^a-zA-Z0-9]", "").ToLower();
-            return cleaned;
+            return Regex.Replace(input, @"[^a-zA-Z0-9]", "").ToLower();
         }
 
         private static LockfileInfo WaitForLockfile()
@@ -293,8 +339,7 @@ namespace LoLRemote
                         catch { }
                     }
                 }
-                Console.Write(".");
-                Thread.Sleep(1500);
+                Thread.Sleep(2000);
             }
         }
 
@@ -307,7 +352,7 @@ namespace LoLRemote
                     Uri u = new Uri(SupabaseUrl);
                     string wsUrl = string.Format("wss://{0}/realtime/v1/websocket?apikey={1}&vsn=1.0.0", u.Host, SupabaseKey);
 
-                    Console.WriteLine("[Supabase] Conectando a la nube...");
+                    Log("Conectando con el servidor en la nube Supabase...", Color.FromArgb(160, 155, 140));
                     _ws = new ClientWebSocket();
                     _ws.Options.SetRequestHeader("apikey", SupabaseKey);
                     _ws.Options.SetRequestHeader("Authorization", "Bearer " + SupabaseKey);
@@ -315,9 +360,13 @@ namespace LoLRemote
                     CancellationTokenSource cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
                     await _ws.ConnectAsync(new Uri(wsUrl), cts.Token);
 
-                    Console.ForegroundColor = ConsoleColor.Green;
-                    Console.WriteLine("[✓] ¡Servidor en la nube conectado! Vinculado a tu token: '" + _roomCode + "'");
-                    Console.ResetColor();
+                    _isConnected = true;
+                    Log("✓ ¡Conectado a la nube! Canal vinculado: '" + _roomCode + "'", Color.FromArgb(37, 187, 132));
+
+                    if (MainFormInstance != null)
+                    {
+                        MainFormInstance.SetCloudStatus(true);
+                    }
 
                     // Join Channel
                     var joinMsg = new Dictionary<string, object>
@@ -334,9 +383,7 @@ namespace LoLRemote
                     };
                     await SendWsJson(joinMsg);
 
-                    Console.ForegroundColor = ConsoleColor.Cyan;
-                    Console.WriteLine(">>> AGENTE LISTO: ESCANEA EL QR O USA EL CELULAR <<<\n");
-                    Console.ResetColor();
+                    Log(">>> AGENTE ACTIVO Y LISTO PARA RECIBIR ÓRDENES <<<", Color.FromArgb(10, 200, 185));
 
                     var cancelSrc = new CancellationTokenSource();
                     var heartbeatTask = Task.Run(() => HeartbeatLoop(cancelSrc.Token));
@@ -359,7 +406,9 @@ namespace LoLRemote
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine("[Aviso] Conexión interrumpida: " + ex.Message + ". Reconectando en 3s...");
+                    _isConnected = false;
+                    if (MainFormInstance != null) MainFormInstance.SetCloudStatus(false);
+                    Log("Aviso de conexión: " + ex.Message + ". Reconectando en 3s...", Color.FromArgb(232, 64, 87));
                 }
 
                 await Task.Delay(3000);
@@ -412,6 +461,13 @@ namespace LoLRemote
             }
             catch { }
 
+            if (phase != _lastGamePhase)
+            {
+                _lastGamePhase = phase;
+                if (MainFormInstance != null) MainFormInstance.SetLoLPhase(phase);
+                Log("Fase actual de LoL: " + phase, Color.FromArgb(240, 230, 210));
+            }
+
             object readyCheck = null;
             if (phase == "ReadyCheck")
             {
@@ -449,7 +505,7 @@ namespace LoLRemote
                                                 Convert.ToInt32(actDict["actorCellId"]) == localCellId &&
                                                 actDict.ContainsKey("type") && actDict["type"] != null && actDict["type"].ToString() == "pick" &&
                                                 !Convert.ToBoolean(actDict["completed"]) &&
-                                                Convert.ToBoolean(actDict["isInProgress"]))
+                                                actDict.ContainsKey("isInProgress") && Convert.ToBoolean(actDict["isInProgress"]))
                                             {
                                                 isMyTurn = true;
                                                 break;
@@ -459,6 +515,7 @@ namespace LoLRemote
                                 }
                             }
                         }
+
                         champSelect = new Dictionary<string, object>
                         {
                             { "localPlayerCellId", localCellId },
@@ -473,10 +530,8 @@ namespace LoLRemote
                             string cname = _pendingLockChampionName;
                             _pendingLockChampionId = 0;
                             _pendingLockChampionName = "";
-                            Console.ForegroundColor = ConsoleColor.Yellow;
-                            Console.WriteLine("\n[Auto-Lock] ¡Llegó tu turno! Fijando automáticamente a " + cname + "...");
-                            Console.ResetColor();
-                            Task.Run(() => LockChampion(cid, cname));
+                            Log("[Auto-Lock] ¡Llegó tu turno! Fijando automáticamente a " + cname + "...", Color.FromArgb(200, 170, 110));
+                            ThreadPool.QueueUserWorkItem((state) => LockChampion(cid, cname));
                         }
                     }
                 }
@@ -534,18 +589,14 @@ namespace LoLRemote
 
                         if (subEvent == "ACCEPT_MATCH")
                         {
-                            Console.ForegroundColor = ConsoleColor.Yellow;
-                            Console.WriteLine("\n[Órden Recibida] ACEPTAR PARTIDA...");
-                            Console.ResetColor();
+                            Log("[Orden Recibida Celular] ACEPTAR PARTIDA...", Color.FromArgb(200, 170, 110));
                             AcceptMatch();
                         }
                         else if (subEvent == "LOCK_CHAMPION" && data != null)
                         {
                             int championId = Convert.ToInt32(data["championId"]);
                             string name = data.ContainsKey("championName") && data["championName"] != null ? data["championName"].ToString() : championId.ToString();
-                            Console.ForegroundColor = ConsoleColor.Yellow;
-                            Console.WriteLine("\n[Órden Recibida] FIJAR CAMPEÓN: " + name + " (ID: " + championId + ")...");
-                            Console.ResetColor();
+                            Log("[Orden Recibida Celular] FIJAR CAMPEÓN: " + name + " (ID: " + championId + ")...", Color.FromArgb(200, 170, 110));
                             LockChampion(championId, name);
                         }
                         else if (subEvent == "HOVER_CHAMPION" && data != null)
@@ -568,20 +619,18 @@ namespace LoLRemote
                 bool ok = LcuTryRequest("POST", "/lol-matchmaking/v1/ready-check/accept", null, out sc, out resp);
                 if (ok)
                 {
-                    Console.ForegroundColor = ConsoleColor.Green;
-                    Console.WriteLine(">>> [Éxito] ¡Partida Aceptada en League of Legends!");
-                    Console.ResetColor();
+                    Log(">>> [ÉXITO] ¡Partida Aceptada en League of Legends!", Color.FromArgb(37, 187, 132));
                     SendActionResult("ACCEPT_MATCH", true, "¡Partida aceptada exitosamente en LoL!");
                 }
                 else
                 {
-                    Console.WriteLine("[Aviso] No se pudo aceptar (status " + sc + "): " + resp);
+                    Log("[Aviso] No se pudo aceptar (status " + sc + "): " + resp, Color.FromArgb(232, 64, 87));
                     SendActionResult("ACCEPT_MATCH", false, "No hay partida activa para aceptar en este momento.");
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine("[Aviso] No se pudo aceptar: " + ex.Message);
+                Log("[Aviso] No se pudo aceptar: " + ex.Message, Color.FromArgb(232, 64, 87));
                 SendActionResult("ACCEPT_MATCH", false, "No hay partida activa para aceptar en este momento.");
             }
         }
@@ -631,7 +680,7 @@ namespace LoLRemote
                     LcuTryRequest("PATCH", "/lol-champ-select/v1/session/actions/" + pickActionId, hoverBody, out sc, out resText);
                 }
                 LcuTryRequest("PATCH", "/lol-champ-select/v1/session/my-selection", hoverBody, out sc, out resText);
-                Console.WriteLine("[Hover] Mostrando a " + champName + " en el cliente...");
+                Log("[Hover] Preseleccionando a " + champName + " en el juego.", Color.FromArgb(160, 155, 140));
             }
             catch { }
         }
@@ -645,7 +694,7 @@ namespace LoLRemote
                 {
                     string phase = LcuGetString("/lol-gameflow/v1/gameflow-phase");
                     if (!string.IsNullOrEmpty(phase)) phase = phase.Trim('"');
-                    Console.WriteLine("[Aviso] Intento de fijar campeón pero no estás en ChampSelect (fase actual: " + phase + ")");
+                    Log("[Aviso] Intento de fijar campeón pero no estás en ChampSelect (fase actual: " + phase + ")", Color.FromArgb(232, 64, 87));
                     SendActionResult("LOCK_CHAMPION", false, "No estás en la selección de campeón en LoL.");
                     return;
                 }
@@ -691,19 +740,16 @@ namespace LoLRemote
                     }
                 }
 
-                Console.WriteLine("[LCU] Celda local: " + localCellId + " | Acción Activa: " + activeActionId + " | Acción Pendiente: " + pendingActionId);
-
-                // Caso 1: Es tu turno activo de selección (isInProgress == true)
+                // Caso 1: Turno activo de selección (isInProgress == true)
                 if (activeActionId != -1)
                 {
-                    int sc;
-                    string resText;
+                    int sc; string resText;
 
-                    // 1. Hover/preseleccionar
+                    // Hover
                     var hoverBody = Serializer.Serialize(new Dictionary<string, object> { { "championId", championId } });
                     LcuTryRequest("PATCH", "/lol-champ-select/v1/session/actions/" + activeActionId, hoverBody, out sc, out resText);
 
-                    // 2. Lock-in directo completando la acción (estándar LCU)
+                    // Lock-in
                     var lockBody = Serializer.Serialize(new Dictionary<string, object>
                     {
                         { "championId", championId },
@@ -713,42 +759,31 @@ namespace LoLRemote
 
                     if (!locked)
                     {
-                        // Fallback adicional por compatibilidad con clientes antiguos
                         LcuTryRequest("POST", "/lol-champ-select/v1/session/actions/" + activeActionId + "/complete", "{}", out sc, out resText);
                     }
 
                     _pendingLockChampionId = 0;
                     _pendingLockChampionName = "";
 
-                    Console.ForegroundColor = ConsoleColor.Green;
-                    Console.WriteLine(">>> [ÉXITO] ¡" + champName + " FIJADO EN TU PARTIDA!");
-                    Console.ResetColor();
-
+                    Log(">>> [ÉXITO] ¡" + champName + " FIJADO EN TU PARTIDA!", Color.FromArgb(37, 187, 132));
                     SendActionResult("LOCK_CHAMPION", true, "¡" + champName + " fijado con éxito! Configurando runas...");
 
                     ApplyRunesAndSpellsAsync(championId);
                     return;
                 }
 
-                // Caso 2: Estás en Draft pero NO es tu turno todavía (fase de bloqueos o esperando turno)
+                // Caso 2: En Draft pero esperando turno (preseleccionar y auto-lock)
                 if (pendingActionId != -1)
                 {
-                    int sc;
-                    string resText;
-
-                    // Preseleccionar (hover) para que tu equipo lo vea
+                    int sc; string resText;
                     var hoverBody = Serializer.Serialize(new Dictionary<string, object> { { "championId", championId } });
                     LcuTryRequest("PATCH", "/lol-champ-select/v1/session/actions/" + pendingActionId, hoverBody, out sc, out resText);
                     LcuTryRequest("PATCH", "/lol-champ-select/v1/session/my-selection", hoverBody, out sc, out resText);
 
-                    // Guardar para autobloqueo cuando comience tu turno
                     _pendingLockChampionId = championId;
                     _pendingLockChampionName = champName;
 
-                    Console.ForegroundColor = ConsoleColor.Cyan;
-                    Console.WriteLine(">>> [Preselección] " + champName + " preseleccionado. Se fijará automáticamente en cuanto sea tu turno.");
-                    Console.ResetColor();
-
+                    Log(">>> [Preselección] " + champName + " preseleccionado. Se fijará automáticamente al comenzar tu turno.", Color.FromArgb(10, 200, 185));
                     SendActionResult("LOCK_CHAMPION", true, "¡" + champName + " preseleccionado! Se fijará automáticamente al comenzar tu turno.");
 
                     ApplyRunesAndSpellsAsync(championId);
@@ -757,29 +792,26 @@ namespace LoLRemote
 
                 // Caso 3: Modos especiales (Blind Pick, ARAM, partidas sin acciones draft)
                 {
-                    int sc;
-                    string resText;
+                    int sc; string resText;
                     var mySelBody = Serializer.Serialize(new Dictionary<string, object> { { "championId", championId } });
                     bool selOk = LcuTryRequest("PATCH", "/lol-champ-select/v1/session/my-selection", mySelBody, out sc, out resText);
 
                     if (selOk)
                     {
-                        Console.ForegroundColor = ConsoleColor.Green;
-                        Console.WriteLine(">>> [ÉXITO] Campeón seleccionado en my-selection.");
-                        Console.ResetColor();
+                        Log(">>> [ÉXITO] Campeón seleccionado en my-selection.", Color.FromArgb(37, 187, 132));
                         SendActionResult("LOCK_CHAMPION", true, "¡" + champName + " seleccionado con éxito!");
                         ApplyRunesAndSpellsAsync(championId);
                     }
                     else
                     {
-                        Console.WriteLine("[Aviso] No se encontró turno de selección ni acción para fijar.");
+                        Log("[Aviso] No se encontró turno de selección ni acción para fijar.", Color.FromArgb(232, 64, 87));
                         SendActionResult("LOCK_CHAMPION", false, "No es tu turno de selección o ya tienes tu campeón fijado.");
                     }
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine("[Error LockChampion] " + ex.Message);
+                Log("[Error LockChampion] " + ex.Message, Color.FromArgb(232, 64, 87));
                 SendActionResult("LOCK_CHAMPION", false, "Error en el cliente de LoL: " + ex.Message);
             }
         }
@@ -798,7 +830,7 @@ namespace LoLRemote
                     {
                         int sc; string resText;
                         runeOk = LcuTryRequest("POST", "/lol-perks/v1/currentpage", Serializer.Serialize(recPages[0]), out sc, out resText);
-                        if (runeOk) Console.WriteLine("[✓] Página de runas recomendadas aplicada.");
+                        if (runeOk) Log("✓ Página de runas recomendadas aplicada.", Color.FromArgb(37, 187, 132));
                     }
 
                     // 2. Hechizos y Runas de Champ Select Grid
@@ -833,7 +865,7 @@ namespace LoLRemote
                                                 { "spell1Id", sDict["spell1Id"] },
                                                 { "spell2Id", sDict["spell2Id"] }
                                             }), out sc, out resText);
-                                        Console.WriteLine("[✓] Hechizos recomendados asignados (D/F).");
+                                        Log("✓ Hechizos recomendados asignados (D/F).", Color.FromArgb(37, 187, 132));
                                     }
                                 }
                             }
@@ -842,7 +874,7 @@ namespace LoLRemote
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine("[Aviso Runas] " + ex.Message);
+                    Log("[Aviso Runas] " + ex.Message, Color.FromArgb(232, 64, 87));
                 }
             });
         }
@@ -870,7 +902,7 @@ namespace LoLRemote
                     { "payload", payload },
                     { "ref", null }
                 };
-                Task.Run(() => SendWsJson(frame));
+                ThreadPool.QueueUserWorkItem((s) => { SendWsJson(frame).Wait(); });
             }
             catch { }
         }
@@ -994,6 +1026,350 @@ namespace LoLRemote
             {
                 responseText = ex.Message;
                 return false;
+            }
+        }
+
+        public static void Log(string message, Color? color = null)
+        {
+            string ts = DateTime.Now.ToString("HH:mm:ss");
+            string full = string.Format("[{0}] {1}", ts, message);
+
+            if (MainFormInstance != null && !MainFormInstance.IsDisposed)
+            {
+                MainFormInstance.AppendLog(full, color ?? Color.FromArgb(240, 230, 210));
+            }
+        }
+    }
+
+    public class MainForm : Form
+    {
+        private Label _lblHeader;
+        private Label _lblSub;
+        private Label _lblStatusBadge;
+        private RichTextBox _rtbLogs;
+        private Button _btnQr;
+        private Button _btnWeb;
+        private Button _btnHide;
+        private Button _btnExit;
+        private NotifyIcon _trayIcon;
+        private ContextMenu _trayMenu;
+
+        private string _currentSummoner = "Invocador";
+        private string _currentRoom = "";
+        private string _pairLink = "https://lol-remote-tau.vercel.app";
+
+        public MainForm()
+        {
+            InitializeComponent();
+        }
+
+        private void InitializeComponent()
+        {
+            this.Text = "LoL Remote - Windows Agent";
+            this.Size = new Size(560, 480);
+            this.StartPosition = FormStartPosition.CenterScreen;
+            this.BackColor = Color.FromArgb(9, 20, 40);
+            this.ForeColor = Color.FromArgb(240, 230, 210);
+            this.FormBorderStyle = FormBorderStyle.FixedSingle;
+            this.MaximizeBox = false;
+
+            // Generar icono Hextech nativo en memoria
+            Icon hextechIcon = CreateHextechIcon();
+            this.Icon = hextechIcon;
+
+            // Top Header Panel
+            Panel topPanel = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 85,
+                BackColor = Color.FromArgb(11, 22, 42),
+                Padding = new Padding(16, 12, 16, 12)
+            };
+
+            _lblHeader = new Label
+            {
+                Text = "⚡ LoL Remote - Agente Windows",
+                Font = new Font("Segoe UI", 13f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(200, 170, 110),
+                AutoSize = true,
+                Location = new Point(16, 12)
+            };
+
+            _lblSub = new Label
+            {
+                Text = "Buscando cliente de League of Legends en tu PC...",
+                Font = new Font("Segoe UI", 8.5f),
+                ForeColor = Color.FromArgb(160, 155, 140),
+                AutoSize = true,
+                Location = new Point(18, 38)
+            };
+
+            _lblStatusBadge = new Label
+            {
+                Text = "● CONECTANDO...",
+                Font = new Font("Segoe UI", 8.5f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(200, 170, 110),
+                AutoSize = true,
+                Location = new Point(18, 58)
+            };
+
+            topPanel.Controls.Add(_lblHeader);
+            topPanel.Controls.Add(_lblSub);
+            topPanel.Controls.Add(_lblStatusBadge);
+
+            // Center Log Box
+            _rtbLogs = new RichTextBox
+            {
+                Dock = DockStyle.Fill,
+                BackColor = Color.FromArgb(5, 10, 20),
+                ForeColor = Color.FromArgb(240, 230, 210),
+                Font = new Font("Consolas", 9f),
+                ReadOnly = true,
+                BorderStyle = BorderStyle.None,
+                ScrollBars = RichTextBoxScrollBars.Vertical
+            };
+
+            // Bottom Button Panel
+            Panel bottomPanel = new Panel
+            {
+                Dock = DockStyle.Bottom,
+                Height = 55,
+                BackColor = Color.FromArgb(11, 22, 42),
+                Padding = new Padding(12, 10, 12, 10)
+            };
+
+            _btnQr = CreateStyledButton("📱 Ver Código QR", 12, 10, 130);
+            _btnQr.Click += (s, e) =>
+            {
+                Program.OpenPairingQrWindow(_currentSummoner, _currentRoom, _pairLink);
+            };
+
+            _btnWeb = CreateStyledButton("🌐 Abrir App Web", 150, 10, 125);
+            _btnWeb.Click += (s, e) =>
+            {
+                try { Process.Start(new ProcessStartInfo(_pairLink) { UseShellExecute = true }); } catch { }
+            };
+
+            _btnHide = CreateStyledButton("🔽 Ocultar a Bandeja", 283, 10, 145);
+            _btnHide.Click += (s, e) =>
+            {
+                this.Hide();
+                ShowTrayBalloon("LoL Remote", "Sigue funcionando en segundo plano aquí al lado del reloj.", ToolTipIcon.Info);
+            };
+
+            _btnExit = CreateStyledButton("✕ Salir", 436, 10, 95);
+            _btnExit.BackColor = Color.FromArgb(40, 15, 20);
+            _btnExit.ForeColor = Color.FromArgb(232, 64, 87);
+            _btnExit.Click += (s, e) =>
+            {
+                ExitApplication();
+            };
+
+            bottomPanel.Controls.Add(_btnQr);
+            bottomPanel.Controls.Add(_btnWeb);
+            bottomPanel.Controls.Add(_btnHide);
+            bottomPanel.Controls.Add(_btnExit);
+
+            this.Controls.Add(_rtbLogs);
+            this.Controls.Add(topPanel);
+            this.Controls.Add(bottomPanel);
+
+            // Context Menu de Bandeja del Sistema
+            _trayMenu = new ContextMenu();
+            _trayMenu.MenuItems.Add(new MenuItem("📱 Vincular Celular (Código QR)", (s, e) => Program.OpenPairingQrWindow(_currentSummoner, _currentRoom, _pairLink)));
+            _trayMenu.MenuItems.Add(new MenuItem("🌐 Abrir App Web en Navegador", (s, e) => { try { Process.Start(new ProcessStartInfo(_pairLink) { UseShellExecute = true }); } catch { } }));
+            _trayMenu.MenuItems.Add(new MenuItem("📋 Copiar PIN Privado", (s, e) => { if (!string.IsNullOrEmpty(_currentRoom)) Clipboard.SetText(_currentRoom); }));
+            _trayMenu.MenuItems.Add(new MenuItem("-"));
+            _trayMenu.MenuItems.Add(new MenuItem("🖥️ Mostrar Panel", (s, e) => RestoreWindow()));
+            _trayMenu.MenuItems.Add(new MenuItem("-"));
+            _trayMenu.MenuItems.Add(new MenuItem("❌ Salir de LoL Remote", (s, e) => ExitApplication()));
+
+            // NotifyIcon en la barra de tareas
+            _trayIcon = new NotifyIcon
+            {
+                Icon = hextechIcon,
+                Text = "LoL Remote - Conectado",
+                Visible = true,
+                ContextMenu = _trayMenu
+            };
+
+            _trayIcon.DoubleClick += (s, e) =>
+            {
+                if (this.Visible) this.Hide();
+                else RestoreWindow();
+            };
+        }
+
+        private Button CreateStyledButton(string text, int x, int y, int width)
+        {
+            Button btn = new Button
+            {
+                Text = text,
+                Location = new Point(x, y),
+                Size = new Size(width, 34),
+                BackColor = Color.FromArgb(20, 35, 60),
+                ForeColor = Color.FromArgb(240, 230, 210),
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 8.5f, FontStyle.Bold),
+                Cursor = Cursors.Hand
+            };
+            btn.FlatAppearance.BorderColor = Color.FromArgb(200, 170, 110);
+            btn.FlatAppearance.BorderSize = 1;
+            return btn;
+        }
+
+        public void RestoreWindow()
+        {
+            if (this.InvokeRequired)
+            {
+                this.Invoke(new Action(RestoreWindow));
+                return;
+            }
+            this.Show();
+            this.WindowState = FormWindowState.Normal;
+            this.BringToFront();
+            this.Activate();
+        }
+
+        public void ExitApplication()
+        {
+            if (_trayIcon != null)
+            {
+                _trayIcon.Visible = false;
+                _trayIcon.Dispose();
+            }
+            Application.Exit();
+            Environment.Exit(0);
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            // Al hacer clic en la X de la ventana, NO se apaga el proceso: se minimiza a la bandeja del sistema
+            if (e.CloseReason == CloseReason.UserClosing)
+            {
+                e.Cancel = true;
+                this.Hide();
+                ShowTrayBalloon("LoL Remote sigue activo",
+                    "El agente continúa funcionando en segundo plano aquí al lado del reloj.", ToolTipIcon.Info);
+            }
+            else
+            {
+                base.OnFormClosing(e);
+            }
+        }
+
+        public void ShowTrayBalloon(string title, string text, ToolTipIcon icon)
+        {
+            if (_trayIcon != null && _trayIcon.Visible)
+            {
+                _trayIcon.ShowBalloonTip(3000, title, text, icon);
+            }
+        }
+
+        public void UpdateConnectionInfo(string summoner, string roomCode, string pairUrl)
+        {
+            if (this.InvokeRequired)
+            {
+                this.Invoke(new Action(() => UpdateConnectionInfo(summoner, roomCode, pairUrl)));
+                return;
+            }
+            _currentSummoner = summoner;
+            _currentRoom = roomCode;
+            _pairLink = pairUrl;
+            _lblSub.Text = string.Format("Jugador: {0} | PIN Privado: {1}", summoner, roomCode);
+            if (_trayIcon != null)
+            {
+                _trayIcon.Text = ("LoL Remote: " + summoner).Substring(0, Math.Min(63, ("LoL Remote: " + summoner).Length));
+            }
+        }
+
+        public void SetCloudStatus(bool online)
+        {
+            if (this.InvokeRequired)
+            {
+                this.Invoke(new Action(() => SetCloudStatus(online)));
+                return;
+            }
+            if (online)
+            {
+                _lblStatusBadge.Text = "● NUBE CONECTADA (LISTO)";
+                _lblStatusBadge.ForeColor = Color.FromArgb(37, 187, 132);
+            }
+            else
+            {
+                _lblStatusBadge.Text = "● RECONECTANDO A LA NUBE...";
+                _lblStatusBadge.ForeColor = Color.FromArgb(232, 64, 87);
+            }
+        }
+
+        public void SetLoLPhase(string phase)
+        {
+            if (this.InvokeRequired)
+            {
+                this.Invoke(new Action(() => SetLoLPhase(phase)));
+                return;
+            }
+            string text = phase;
+            switch (phase)
+            {
+                case "Lobby": text = "En Sala / Lobby"; break;
+                case "Matchmaking": text = "Buscando Partida..."; break;
+                case "ReadyCheck": text = "¡Partida Encontrada!"; break;
+                case "ChampSelect": text = "En Selección de Campeón"; break;
+                case "InProgress": text = "En Partida"; break;
+                case "None": text = "En Menú Principal"; break;
+            }
+            _lblStatusBadge.Text = string.Format("● NUBE CONECTADA | {0}", text);
+            _lblStatusBadge.ForeColor = Color.FromArgb(10, 200, 185);
+        }
+
+        public void AppendLog(string message, Color color)
+        {
+            if (_rtbLogs == null || _rtbLogs.IsDisposed) return;
+            if (_rtbLogs.InvokeRequired)
+            {
+                _rtbLogs.Invoke(new Action(() => AppendLog(message, color)));
+                return;
+            }
+
+            _rtbLogs.SelectionStart = _rtbLogs.TextLength;
+            _rtbLogs.SelectionLength = 0;
+            _rtbLogs.SelectionColor = color;
+            _rtbLogs.AppendText(message + "\r\n");
+            _rtbLogs.SelectionColor = _rtbLogs.ForeColor;
+            _rtbLogs.ScrollToCaret();
+        }
+
+        private Icon CreateHextechIcon()
+        {
+            try
+            {
+                using (var bmp = new Bitmap(32, 32))
+                using (var g = Graphics.FromImage(bmp))
+                {
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    g.Clear(Color.FromArgb(9, 20, 40));
+                    using (var goldPen = new Pen(Color.FromArgb(200, 170, 110), 2.5f))
+                    {
+                        g.DrawEllipse(goldPen, 3, 3, 25, 25);
+                    }
+                    using (var cyanPen = new Pen(Color.FromArgb(10, 200, 185), 1.5f))
+                    {
+                        g.DrawEllipse(cyanPen, 7, 7, 17, 17);
+                    }
+                    using (var font = new Font("Arial", 10f, FontStyle.Bold, GraphicsUnit.Pixel))
+                    using (var brush = new SolidBrush(Color.FromArgb(240, 230, 210)))
+                    using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+                    {
+                        g.DrawString("LR", font, brush, new RectangleF(0, 0, 32, 32), sf);
+                    }
+                    IntPtr hIcon = bmp.GetHicon();
+                    return Icon.FromHandle(hIcon);
+                }
+            }
+            catch
+            {
+                return SystemIcons.Application;
             }
         }
     }

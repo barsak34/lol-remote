@@ -70,9 +70,56 @@ export default function HomePage() {
   const [isAccepting, setIsAccepting] = useState(false);
   const [isLocking, setIsLocking] = useState(false);
 
+  // PWA (Instalar como App en celular)
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isStandalone, setIsStandalone] = useState(false);
+  const [showIosModal, setShowIosModal] = useState(false);
+
   const channelRef = useRef<RealtimeChannel | null>(null);
   const lastStateTime = useRef<number>(0);
   const prevPhase = useRef<string>('None');
+
+  // Registrar Service Worker y detector de PWA
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/sw.js').catch(() => {});
+      }
+      if (window.matchMedia('(display-mode: standalone)').matches || (window.navigator as any).standalone) {
+        setIsStandalone(true);
+      }
+      const beforeInstallHandler = (e: any) => {
+        e.preventDefault();
+        setDeferredPrompt(e);
+      };
+      window.addEventListener('beforeinstallprompt', beforeInstallHandler);
+      window.addEventListener('appinstalled', () => {
+        setIsStandalone(true);
+        setDeferredPrompt(null);
+      });
+      return () => {
+        window.removeEventListener('beforeinstallprompt', beforeInstallHandler);
+      };
+    }
+  }, []);
+
+  const handleInstallApp = async () => {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      const choice = await deferredPrompt.userChoice;
+      if (choice && choice.outcome === 'accepted') {
+        setIsStandalone(true);
+      }
+      setDeferredPrompt(null);
+    } else {
+      const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent);
+      if (isIos) {
+        setShowIosModal(true);
+      } else {
+        alert('Para instalar:\n1. Toca los tres puntos (⋮) en tu navegador\n2. Elige "Instalar aplicación" o "Agregar a la pantalla principal"');
+      }
+    }
+  };
 
   // 1. Vinculación silenciosa automática mediante QR (?pair=TOKEN) o memoria guardada
   useEffect(() => {
@@ -352,31 +399,55 @@ export default function HomePage() {
           </span>
         </div>
 
-        {/* Indicador de Conexión */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '6px',
-          padding: '6px 12px',
-          borderRadius: '20px',
-          backgroundColor: gameState.online ? 'rgba(37, 187, 132, 0.15)' : 'rgba(232, 64, 87, 0.15)',
-          border: `1px solid ${gameState.online ? 'var(--riot-green)' : 'var(--riot-red)'}`,
-        }}>
-          <span style={{
-            width: '8px',
-            height: '8px',
-            borderRadius: '50%',
-            backgroundColor: gameState.online ? 'var(--riot-green)' : 'var(--riot-red)',
-            boxShadow: gameState.online ? '0 0 8px var(--riot-green)' : 'none',
-          }} />
-          <span style={{
-            fontSize: '0.72rem',
-            fontWeight: 800,
-            color: gameState.online ? 'var(--riot-green)' : 'var(--riot-red)',
-            letterSpacing: '0.5px',
+        {/* Botón de Instalar App (PWA) e Indicador de Conexión */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {!isStandalone && (
+            <button
+              onClick={handleInstallApp}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px',
+                padding: '6px 11px',
+                borderRadius: '16px',
+                backgroundColor: 'rgba(200, 170, 110, 0.15)',
+                border: '1px solid var(--hextech-gold)',
+                color: 'var(--hextech-gold-bright)',
+                fontSize: '0.72rem',
+                fontWeight: 700,
+                cursor: 'pointer',
+              }}
+            >
+              <span>📲</span>
+              <span>Instalar</span>
+            </button>
+          )}
+
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            padding: '6px 12px',
+            borderRadius: '20px',
+            backgroundColor: gameState.online ? 'rgba(37, 187, 132, 0.15)' : 'rgba(232, 64, 87, 0.15)',
+            border: `1px solid ${gameState.online ? 'var(--riot-green)' : 'var(--riot-red)'}`,
           }}>
-            {gameState.online ? 'ONLINE' : 'OFFLINE'}
-          </span>
+            <span style={{
+              width: '8px',
+              height: '8px',
+              borderRadius: '50%',
+              backgroundColor: gameState.online ? 'var(--riot-green)' : 'var(--riot-red)',
+              boxShadow: gameState.online ? '0 0 8px var(--riot-green)' : 'none',
+            }} />
+            <span style={{
+              fontSize: '0.72rem',
+              fontWeight: 800,
+              color: gameState.online ? 'var(--riot-green)' : 'var(--riot-red)',
+              letterSpacing: '0.5px',
+            }}>
+              {gameState.online ? 'ONLINE' : 'OFFLINE'}
+            </span>
+          </div>
         </div>
       </header>
 
@@ -755,6 +826,76 @@ export default function HomePage() {
       }}>
         LoL Remote &bull; Runas y Hechizos Automáticos
       </footer>
+
+      {/* Modal de Instrucciones para iPhone / iPad */}
+      {showIosModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.85)',
+          backdropFilter: 'blur(8px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '20px',
+          zIndex: 9999,
+        }}>
+          <div style={{
+            backgroundColor: 'var(--bg-card)',
+            border: '2px solid var(--hextech-gold)',
+            borderRadius: '20px',
+            padding: '24px',
+            maxWidth: '360px',
+            width: '100%',
+            textAlign: 'center',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '14px',
+            boxShadow: '0 10px 40px rgba(0, 0, 0, 0.8)',
+          }}>
+            <span style={{ fontSize: '2rem' }}>📲</span>
+            <h3 style={{
+              margin: 0,
+              fontSize: '1.2rem',
+              color: 'var(--hextech-gold-bright)',
+              fontWeight: 900,
+              textTransform: 'uppercase',
+            }}>
+              Instalar en iPhone / iPad
+            </h3>
+            <p style={{
+              margin: 0,
+              fontSize: '0.88rem',
+              lineHeight: 1.5,
+              color: 'var(--text-main)',
+              textAlign: 'left',
+            }}>
+              1. Toca el botón <strong>Compartir</strong> (el ícono del cuadrado con la flecha hacia arriba <strong>⎋</strong>) en la barra inferior de Safari.<br /><br />
+              2. Desliza hacia abajo y presiona <strong>&quot;Agregar a la pantalla de inicio&quot; (+)</strong>.<br /><br />
+              3. ¡Listo! Se instalará como una App nativa sin barra de navegador.
+            </p>
+            <button
+              onClick={() => setShowIosModal(false)}
+              style={{
+                marginTop: '6px',
+                padding: '12px',
+                borderRadius: '10px',
+                backgroundColor: 'var(--hextech-gold)',
+                color: '#091428',
+                fontWeight: 800,
+                fontSize: '0.9rem',
+                border: 'none',
+                cursor: 'pointer',
+              }}
+            >
+              Entendido
+            </button>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
